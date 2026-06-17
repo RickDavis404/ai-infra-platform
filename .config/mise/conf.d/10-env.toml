@@ -1,0 +1,89 @@
+# 10-env.toml — non-secret [env] for the ai-infra-platform repo.
+#
+# mise merges every .config/mise/conf.d/*.toml in lexical order. This file owns the
+# [env] table only. NO secret material lives here (fnox+age is the only secret store).
+
+[env]
+KUBECONFIG    = "{{config_root}}/.local/kube/config" # repo-local kubeconfig (copyToHost target, under .local)
+LIMA_INSTANCE = "ai-inf-platform"                             # Lima instance base name (kubeadm pivot, D005)
+
+# Localhost-only port-forward defaults (UIs require creds; no anon access).
+LITELLM_PORT   = "34000"
+LANGFUSE_PORT  = "33000"
+GRAFANA_PORT   = "33001"
+OTEL_HTTP_PORT = "34318"
+
+# Default chat model alias (path resolved from this var, never hardcoded absolute).
+AI_INFRA_DEFAULT_CHAT_MODEL = "mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf"
+# AI_INFRA_DEFAULT_CHAT_MODEL_PATH is set by the user's machine / host-service config,
+# NOT committed here (it is a local filesystem path).
+
+# --- Configurable cluster network plane (defaults; a later task makes the manifests
+# consume these instead of hardcoding the IPs). All on the socket_vmnet shared subnet.
+AI_INFRA_LIMA_NETWORK    = "shared"             # Lima network name (limactl network; `init` may override)
+AI_INFRA_SHARED_SUBNET   = "192.168.105.0/24"   # the socket_vmnet shared network CIDR
+AI_INFRA_CP_VIP          = "192.168.105.40"     # kube-vip control-plane VIP (API server)
+AI_INFRA_LB_RANGE_START  = "192.168.105.200"    # Cilium LB-IPAM pool start
+AI_INFRA_LB_RANGE_STOP   = "192.168.105.250"    # Cilium LB-IPAM pool stop
+AI_INFRA_LITELLM_VIP     = "192.168.105.200"    # LiteLLM gateway service VIP
+AI_INFRA_LANGFUSE_VIP    = "192.168.105.201"    # Langfuse web service VIP
+AI_INFRA_GRAFANA_VIP     = "192.168.105.202"    # Grafana service VIP
+AI_INFRA_OTEL_VIP        = "192.168.105.203"    # OTel Collector OTLP service VIP
+AI_INFRA_HUBBLE_VIP      = "192.168.105.204"    # Hubble UI service VIP
+AI_INFRA_LANGFUSE_PG_VIP = "192.168.105.205"    # langfuse-pg `-ro` Postgres LB VIP (MCP)
+AI_INFRA_LITELLM_PG_VIP  = "192.168.105.206"    # litellm-pg `-ro` Postgres LB VIP (MCP)
+AI_INFRA_CLICKHOUSE_VIP  = "192.168.105.207"    # ClickHouse (langfuse-ch) HTTP LB VIP (MCP)
+
+# Docker Hub pull-through cache (the long-lived `ai-registry` VM — NOT an ai-inf-platform-* node,
+# so cluster teardown never deletes it). containerd on every node mirrors docker.io
+# through this host:port so repeated cold standups do ~0 docker.io pulls (dodges the
+# anon 429 rate limit). socket_vmnet `shared` has no static IP, so `mise run cache:up`
+# DISCOVERS the VM's DHCP IP and overrides this in the gitignored 99-local.toml. This
+# committed default is the documented fallback (used only if cache:up never ran).
+AI_INFRA_REGISTRY_ADDR   = "192.168.105.50:5000"
+
+# --- Agent → platform passthrough (NON-SECRET; VIPs referenced from the vars above).
+# mise resolves {{env.X}} against env set earlier in this same [env] table, so the
+# AI_INFRA_*_VIP defaults above flow through here. Secrets (virtual keys, passwords)
+# are NEVER here — they are composed by secret-env.sh (_.source at the end).
+
+# Claude Code → LiteLLM gateway VIP (model traffic) + retry budget.
+ANTHROPIC_BASE_URL                         = "http://{{env.AI_INFRA_LITELLM_VIP}}:4000"
+CLAUDE_CODE_MAX_RETRIES                    = "100"
+MAX_STRUCTURED_OUTPUT_RETRIES              = "50"
+
+# OpenTelemetry: Claude Code → OTel Collector VIP (OTLP/HTTP protobuf).
+CLAUDE_CODE_ENABLE_TELEMETRY          = "1"
+CLAUDE_CODE_ENHANCED_TELEMETRY_BETA   = "1"
+OTEL_METRICS_EXPORTER                 = "otlp"
+OTEL_LOGS_EXPORTER                    = "otlp"
+OTEL_TRACES_EXPORTER                  = "otlp"
+OTEL_EXPORTER_OTLP_PROTOCOL           = "http/protobuf"
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT   = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/metrics"
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT      = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/logs"
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT    = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/traces"
+OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platform-local"
+OTEL_LOG_USER_PROMPTS                 = "1"
+OTEL_LOG_TOOL_DETAILS                 = "1"
+OTEL_LOG_TOOL_CONTENT                 = "1"
+
+# Langfuse tracing + MCP (base URL/host at the langfuse-web VIP; read-only MCP).
+TRACE_TO_LANGFUSE     = "true"
+LANGFUSE_BASE_URL     = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
+CC_LANGFUSE_MAX_CHARS = "67108864"
+LANGFUSE_HOST         = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
+LANGFUSE_MCP_READ_ONLY = "true"
+
+# Grafana MCP (URL at the grafana VIP; admin USERNAME non-secret, password via fnox).
+GRAFANA_URL      = "http://{{env.AI_INFRA_GRAFANA_VIP}}:3000"
+GRAFANA_USERNAME = "admin"
+
+# ClickHouse MCP (host at the ClickHouse VIP; password via fnox).
+CLICKHOUSE_HOST   = "{{env.AI_INFRA_CLICKHOUSE_VIP}}"
+CLICKHOUSE_PORT   = "8123"
+CLICKHOUSE_USER   = "default"
+CLICKHOUSE_SECURE = "false"
+
+# fnox-decrypted secrets (virtual keys, passwords, composed DSNs) are exported by
+# this committed script on `cd`. redact=true hides the values in `mise env` output.
+_.source = { path = "{{config_root}}/.config/mise/secret-env.sh", redact = true }

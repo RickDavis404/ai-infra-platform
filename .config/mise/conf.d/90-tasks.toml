@@ -1,0 +1,27 @@
+# 90-tasks.toml — depends-only task aggregators + [settings] for the ai-infra-platform repo.
+#
+# mise merges every .config/mise/conf.d/*.toml in lexical order. This file owns the
+# depends-only aggregator tasks (no body — they only fan out to file-tasks) and the
+# [settings] block. Task BODIES live as `.sh` file-tasks under .config/mise/tasks/<group>/.
+#
+# NOTE: the `up`/`down` lifecycle aggregators are NO LONGER depends-only tables here.
+# mise `depends` run in PARALLEL (a DAG), which raced lima:start (the old up fired
+# lima:kubeconfig/k8s:cilium/k8s:apply before ai-inf-platform-0 existed). They are now SEQUENTIAL
+# file-tasks: `.config/mise/tasks/up.sh` (task `up`) and `.config/mise/tasks/down.sh`
+# (task `down`).
+
+[settings]
+# Required for the npm: backend (mmdc) in 00-tools.toml.
+experimental = true
+
+# --- Validation aggregator ---
+[tasks.validate]
+description = "Run all local validation checks."
+depends = [
+  "validate:fmt", "validate:shell", "validate:shfmt", "validate:yaml",
+  "validate:helm-kustomize", "validate:secrets", "validate:private-names",
+  "validate:no-bitnami", "validate:no-nodeport",
+  "validate:scrub", "validate:mermaid", "validate:docs-safety",
+]
+
+# --- Sequential file-tasks: setup.sh, smoke.sh, smoke/ha.sh, up.sh, down.sh. ---
