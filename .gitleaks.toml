@@ -1,0 +1,60 @@
+# gitleaks configuration for the ai-infra-platform repo.
+# Extends the upstream default rule set and adds a minimal allowlist for the
+# committed, publication-safe placeholder surface (example env files and the
+# age public recipients). No real secret values are ever committed; the only
+# committed cipher is `secrets/*.age` (age ciphertext) and the public
+# `secrets/.agerecipients` recipients list.
+
+title = "ai-infra-platform gitleaks config"
+
+[extend]
+# Inherit all upstream detection rules; we only add allowlist entries below.
+useDefault = true
+
+# Array-of-tables form (`[[allowlists]]`): gitleaks 8.30.1 rejects the deprecated
+# singular `[allowlist]` when a second rule-scoped allowlist is also present, so
+# both allowlists use the plural form.
+[[allowlists]]
+description = "Publication-safe placeholders and public key material."
+
+# Files whose contents are placeholders or public-by-design.
+paths = [
+  '''^\.git/''',
+  '''^\.local/''',
+  '''^\.sandbox-[^/]+/''',
+  '''^kubernetes/.*/charts/''',
+  '''secrets/.*\.env\.example$''',
+  '''secrets/\.agerecipients$''',
+  '''.*\.age$''',
+]
+
+# Placeholder/example token shapes that must not trip the scanner. These are the
+# only allowed stand-ins (see the publication-safety placeholder list).
+regexes = [
+  '''CHANGEME-[a-z0-9-]+''',
+  '''<fnox\+age-managed>''',
+  '''admin@ai-infra-platform\.example''',
+  '''age1[a-z0-9]{6,}''',
+]
+
+# Public age recipients begin with the `age1` bech32 prefix and are safe to
+# commit; do not treat them as leaked keys.
+stopwords = [
+  "example",
+  "placeholder",
+  "changeme",
+]
+
+# Rule-scoped allowlist (gitleaks 8.30.1 `[[allowlists]]`): the entropy-based
+# `generic-api-key` rule misfires on planning design/spec/research prose that
+# *names* secrets (K3S_TOKEN, OAuth, "LiteLLM master key", credentials) and on a
+# Helm chart-version bullet. All such matches are English text / version pins,
+# not values — verified in history (5 matches, all generic-api-key, entropy
+# 3.5–4.0, no real tokens; see TASK #39). `targetRules` scopes the suppression
+# to ONLY the noisy generic rule on planning/**.md, so every high-fidelity rule
+# (age-secret-key, private-key, cloud tokens, JWT, etc.) stays active on those
+# paths and everywhere else.
+[[allowlists]]
+  description = "generic-api-key entropy false positives in planning design/spec/research prose (no real values; see TASK #39)"
+  targetRules = ["generic-api-key"]
+  paths = ['''^planning/.*\.md$''']
