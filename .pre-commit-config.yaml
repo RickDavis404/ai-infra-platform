@@ -1,0 +1,57 @@
+# .pre-commit-config.yaml — hooks delegate to the same checks as `mise run validate:*`
+# so local run == hook == CI (single source of truth). Revs are pinned exactly.
+---
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: \.md$
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]   # k8s manifests use --- docs
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.11.0
+    hooks:
+      - id: shellcheck
+        args: [-s, bash]
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        args: [-c, .yamllint.yaml]
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: shfmt
+        name: shfmt -d -i 2
+        entry: shfmt -d -i 2
+        language: system
+        types: [shell]
+      - id: private-name-guard
+        name: private-name guard (rg)
+        entry: bash -c 'mise run validate:private-names'
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: no-bitnami-guard
+        name: no-Bitnami guard (rendered)
+        entry: bash -c 'mise run validate:no-bitnami'
+        language: system
+        pass_filenames: false
+        always_run: true
+      - id: scrub-guard
+        name: scrub guard (publication-safety)
+        entry: bash -c 'mise run validate:scrub'
+        language: system
+        pass_filenames: false
+        always_run: true

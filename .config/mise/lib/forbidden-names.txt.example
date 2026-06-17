@@ -1,0 +1,49 @@
+# .config/mise/lib/forbidden-names.txt.example
+# COMMITTED template for the gitignored .config/mise/lib/forbidden-names.txt.
+#
+# Copy this to forbidden-names.txt and add any truly-private literals locally:
+#   cp .config/mise/lib/forbidden-names.txt.example .config/mise/lib/forbidden-names.txt
+#
+# The private-names guard (the validate:private-names task) reads the working
+# copy (forbidden-names.txt), ORs every non-comment line into a single regex, and
+# fails the build on any match in the tracked tree. Both the guard script and the
+# working list self-exclude from the scan.
+#
+# This template documents the CATEGORIES of forbidden tokens without leaking any
+# specific private value. The generic regexes below are publication-safe defaults;
+# keep org/customer/device-specific literals OUT of this committed template and add
+# them only to your local (gitignored) forbidden-names.txt.
+#
+# Format: one POSIX-ERE / rg regex per non-comment, non-blank line.
+
+# === Category: private org / handle / customer names ===
+# Add your own org name, GitHub handle local-part, and customer prefixes locally,
+# e.g. a literal like `acme-internal` or a customer prefix `customer-[a-z0-9]`.
+# (No example literal is shipped here on purpose.)
+
+# === Category: network identity (tailnet / overlay hostnames) ===
+\.ts\.net
+# Add literal tailnet hostnames locally if you want belt-and-suspenders coverage.
+
+# === Category: alternate VM runtime forbidden by spec (lab is Lima) ===
+# (?i:...) keeps the match case-insensitive so capitalized prose variants are caught.
+\b(?i:colima)\b
+
+# === Category: frozen / paywalled Bitnami artifacts ===
+bitnamilegacy
+bitnami/kubectl
+
+# === Category: NodePort service surface (the lab is port-forward only) ===
+# Match the manifest FORM, not the bare word, so prohibition prose in docs
+# ("no NodePort") does not false-positive.
+type:[[:space:]]*NodePort
+nodePort:
+
+# === Category: forbidden environment label (must be ai-infra-platform-local) ===
+# Match the leak FORM (key=value), not the bare token.
+deployment\.environment=local-dev
+
+# === Category: real absolute home paths ===
+# Add a literal real home-path prefix locally if a non-placeholder one slips in,
+# e.g. `/Users/<your-name>`. The placeholders <repo-root>, $HOME, and mac-local
+# are the only allowed substitutes (IMPL-BRIEF §4).
