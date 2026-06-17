@@ -1,0 +1,63 @@
+# yamllint configuration — https://yamllint.readthedocs.io
+# Tuned for Kubernetes multi-document manifests and Helm-style values files.
+---
+extends: default
+
+rules:
+  # Long lines are common in manifests (image refs, annotations); do not fail on
+  # them but keep non-breakable content (URLs, single long tokens) exempt.
+  line-length:
+    max: 160
+    allow-non-breakable-words: true
+    allow-non-breakable-inline-mappings: true
+
+  # Values files frequently column-align `key:   value` for readability.
+  colons:
+    max-spaces-after: -1
+
+  # k8s manifests are frequently concatenated without a leading `---`; do not
+  # require an explicit document-start marker.
+  document-start: disable
+
+  # Allow the standard YAML boolean spellings used throughout Helm values.
+  truthy:
+    allowed-values: ["true", "false", "on", "off", "yes", "no"]
+    check-keys: false
+
+  # One space between content and an inline comment is enough.
+  comments:
+    min-spaces-from-content: 1
+    require-starting-space: true
+
+  # k8s/Helm YAML frequently aligns comments with surrounding keys, not content.
+  comments-indentation: disable
+
+  # Compact flow mappings (e.g. CNPG `requests: { cpu: 250m, memory: 512Mi }`) are
+  # idiomatic in operator CRs; allow a single space inside the braces.
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+
+  # Allow empty values (e.g. `key:` placeholders in values files).
+  empty-values: disable
+
+  # Indentation is 2-space. `consistent` accepts BOTH the 0-indent sequence style
+  # idiomatic to kustomize (`resources:` / `helmCharts:` with `- item` at column 0)
+  # and the 2-indent style, as long as a given file is internally consistent.
+  indentation:
+    spaces: 2
+    indent-sequences: consistent
+    check-multi-line-strings: false
+
+ignore: |
+  .git/
+  **/charts/
+  **/*.tmpl
+  .local/
+  secrets/age/
+  # Vendored upstream CRDs (prometheus-operator v0.81.0, controller-gen output),
+  # kept BYTE-FOR-BYTE verbatim so the pin is auditable. Their OpenAPI schema
+  # `description` prose legitimately exceeds the line-length limit — the same
+  # "fetched upstream artifact, not authored content" exemption already applied to
+  # **/charts/.
+  kubernetes/monitoring-crds/crds/

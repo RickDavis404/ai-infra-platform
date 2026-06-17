@@ -1,0 +1,14 @@
+# shellcheck configuration for the ai-infra-platform repo.
+# Scripts are bash and source shared helpers from .config/mise/lib/common.sh.
+
+# Treat all scripts as bash regardless of extension/shebang.
+shell=bash
+
+# Allow following `source`/`.` into other files so sourced helpers are checked.
+external-sources=true
+
+# Resolve sourced paths relative to the script's own directory AND the repo root
+# (file-tasks source the shared lib via a repo-root-relative `# shellcheck source=`
+# directive, e.g. `.config/mise/lib/common.sh`).
+source-path=SCRIPTDIR
+source-path=.
