@@ -1,0 +1,141 @@
+# lima/templates/registry.yaml — long-lived Docker Hub pull-through CACHE VM.
+#
+# A minimal single-node Lima VM (the `ai-registry` instance) that runs the official
+# `registry:2` (CNCF Distribution) in PROXY / pull-through mode against Docker Hub. It
+# is DELIBERATELY NOT one of the ai-inf-platform-* cluster VMs — `lima:delete` /
+# `cluster:teardown` only ever touch ai-inf-platform-0/1/2, so this cache survives every cluster
+# teardown and a fresh cold standup does ~0 docker.io pulls (the layers are already on
+# the host-persistent mount).
+#
+# Networking: SAME socket_vmnet `shared` L2 (192.168.105.0/24) as the cluster, so every
+# kubeadm node's containerd can reach the cache on the L2 by IP:5000. socket_vmnet's
+# `shared` network has NO supported static-IP field — macOS bootpd (DHCP) assigns the
+# guest IP (lease range within 192.168.105.0/24). Lima derives a STABLE MAC from the
+# instance name, so `ai-registry`'s DHCP IP stays constant across restarts. cache:up
+# DISCOVERS that IP after first start and writes it to the gitignored
+# .config/mise/conf.d/99-local.toml as AI_INFRA_REGISTRY_ADDR=<ip>:5000, which lima:start
+# then passes into the cluster template's containerd certs.d mirror config. The default
+# (when no override is written) is 192.168.105.50:5000 — see conf.d/10-env.toml.
+#
+# Persistence: <repoRoot>/.local/registry is bind-mounted WRITABLE (virtiofs) to the
+# registry data dir in the guest, so the blob cache lives on the Mac and outlives the VM.
+# The registry config.yml (which carries the Docker Hub creds at runtime) is ALSO seeded
+# into that gitignored mount by cache:up — it is NEVER committed and NEVER baked into
+# this template.
+minimumLimaVersion: 2.0.0
+base: template:_images/ubuntu-lts
+
+# VZ (Apple Virtualization framework): native virtiofs mounts, fast. Immutable after
+# instance creation (fixed here, never changed via `--set`).
+vmType: vz
+mountType: virtiofs
+
+# Tiny footprint — this VM only runs one container (the registry proxy).
+cpus: 2
+memory: 2GiB
+disk: 40GiB
+
+# Real L2 via socket_vmnet `shared` (192.168.105.0/24) — the SAME network the cluster
+# nodes use, so containerd on every node reaches the cache by IP. NIC pinned to `lima0`
+# (the discovered shared-network interface cache:up reads the DHCP IP from).
+networks:
+- lima: shared
+  interface: lima0
+
+# Lima-managed system containerd runs the registry:2 container in-guest via nerdctl.
+containerd:
+  system: true
+  user: false
+
+param:
+  # Absolute host repo path (set at start time by cache:up). Anchors the writable host
+  # mount under <repoRoot>/.local/registry. `{{.Dir}}` is ~/.lima/<name>, NOT the repo,
+  # so the repo root must be passed as a param (same pattern as k8s-cilium.yaml).
+  repoRoot: ""
+
+# Single WRITABLE host mount: <repoRoot>/.local/registry -> /mnt/registry. cache:up
+# `mkdir -p`s it BEFORE `limactl start` (virtiofs requires the host dir to exist + be
+# writable). It holds BOTH:
+#   - data/   : the registry blob store (host-persistent pull-through cache).
+#   - config.yml : the registry config (proxy + Docker Hub creds), seeded at runtime by
+#                  cache:up from the gitignored secrets/shared.env. NEVER committed.
+mounts:
+- location: "{{.Param.repoRoot}}/.local/registry"
+  mountPoint: "/mnt/registry"
+  writable: true
+
+# Disable host loopback port-forwarding. The cluster reaches the registry over the
+# shared L2 (IP:5000), never via 127.0.0.1 — and auto-forwarding guest 5000 onto host
+# 127.0.0.1:5000 would needlessly collide with anything else on the Mac. SSH is a
+# separate core connection and is unaffected.
+portForwards:
+- guestIPMustBeZero: true
+  guestPortRange: [1, 65535]
+  ignore: true
+- guestPortRange: [1, 65535]
+  ignore: true
+
+provision:
+# --- step 1: run registry:2 in pull-through PROXY mode via system containerd ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    # Idempotent: if the proxy container is already running, leave it.
+    if nerdctl ps --format '{{.Names}}' 2>/dev/null | grep -qx ai-registry-proxy; then
+      exit 0
+    fi
+    # The data dir + config.yml live on the host-persistent mount (seeded by cache:up).
+    # config.yml carries the proxy remoteurl (https://registry-1.docker.io) and, when
+    # the operator supplied them, the Docker Hub username/token. If config.yml is absent
+    # (cache:up not run, or first boot), write a minimal ANONYMOUS proxy config so the
+    # cache still works (anonymous Docker Hub limits) — cache:up overwrites it with the
+    # authenticated config and restarts the container.
+    install -d -m 0755 /mnt/registry/data
+    if [ ! -f /mnt/registry/config.yml ]; then
+      echo >&2 "WARNING: /mnt/registry/config.yml not seeded yet — writing an ANONYMOUS proxy config."
+      echo >&2 "WARNING: no Docker Hub auth means lower pull limits. Run 'mise run cache:up' to seed credentials."
+      cat >/mnt/registry/config.yml <<'CFG'
+    version: 0.1
+    log:
+      level: info
+    storage:
+      filesystem:
+        rootdirectory: /var/lib/registry
+    http:
+      addr: :5000
+    proxy:
+      remoteurl: https://registry-1.docker.io
+    CFG
+    fi
+    # Pull the registry image (one-time; cached on the persistent disk thereafter) and
+    # run it bound to :5000 on all guest interfaces (incl. lima0). --restart=always so
+    # it survives guest reboots. The host mount provides BOTH the config and the data.
+    nerdctl pull registry:2
+    nerdctl rm -f ai-registry-proxy 2>/dev/null || true
+    nerdctl run -d \
+      --name ai-registry-proxy \
+      --restart=always \
+      -p 0.0.0.0:5000:5000 \
+      -v /mnt/registry/config.yml:/etc/distribution/config.yml:ro \
+      -v /mnt/registry/data:/var/lib/registry \
+      registry:2 \
+      serve /etc/distribution/config.yml
+
+probes:
+- description: "registry:2 pull-through proxy to be serving on :5000"
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    # /v2/ returns 200 once the proxy is up (it does not require auth to answer /v2/).
+    if ! timeout 300s bash -c "until curl -fsS http://127.0.0.1:5000/v2/ >/dev/null 2>&1; do sleep 3; done"; then
+      echo >&2 "registry proxy not serving /v2/ on :5000 yet"
+      exit 1
+    fi
+  hint: |
+    Run "limactl shell ai-registry sudo nerdctl logs ai-registry-proxy" to debug.
+
+message: |
+  Docker Hub pull-through cache VM `ai-registry` is up. Discover its shared-L2 IP with
+  `mise run cache:status`; `mise run cache:up` writes AI_INFRA_REGISTRY_ADDR=<ip>:5000
+  to the gitignored 99-local.toml so the cluster's containerd mirrors docker.io through it.

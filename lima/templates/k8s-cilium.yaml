@@ -1,0 +1,457 @@
+# lima/templates/k8s-cilium.yaml
+# Parameterized upstream-kubeadm Kubernetes template for a 3-node HA control plane
+# (stacked etcd, quorum 2/3) on Lima, with a kube-vip control-plane VIP and Cilium
+# CNI installed out-of-band. Derived from the Lima Tier-1 `template:k8s` (COPIED +
+# edited, NOT used as a base:). See decision D005 and research feedback-v2/
+# {lima,ha-networking}.md.
+#
+# Differences vs the upstream k8s template:
+#   - vmType vz + virtiofs writable per-instance host mounts (storage + config),
+#     replacing the upstream `mounts: []`.
+#   - socket_vmnet `shared` real-L2 network on guest NIC lima0 (the upstream multi-
+#     node story uses user-v2, which cannot carry an ARP VIP to the host).
+#   - kube-vip control-plane VIP static pod placed in /etc/kubernetes/manifests/
+#     BEFORE init/join (super-admin.conf host-path fix for k8s >= 1.29).
+#   - kubeadm v1beta4 with controlPlaneEndpoint = the VIP, certSANs incl. the VIP,
+#     podSubnet 10.42.0.0/16, serviceSubnet 10.43.0.0/16, kubelet/advertiseAddress/
+#     node-ip pinned to the node's discovered lima0 IP.
+#   - `kubeadm init --upload-certs --skip-phases=addon/kube-proxy` (role=init) OR
+#     `kubeadm join --control-plane` (role=join); NO Flannel apply (Cilium is
+#     installed by the k8s:cilium task afterwards).
+#
+# Roles (Param.role):
+#   init  — ai-inf-platform-0: `kubeadm init`, uploads certs, becomes the first CP node.
+#   join  — ai-inf-platform-1/2: `kubeadm join --control-plane` via the join command captured
+#           from ai-inf-platform-0 (passed base64 in Param.joinCmdB64).
+minimumLimaVersion: 2.0.0
+base: template:_images/ubuntu-lts
+
+# VZ (Apple Virtualization framework): native virtiofs mounts, fast. Immutable after
+# instance creation, so it is fixed here and never changed via `--set`.
+vmType: vz
+mountType: virtiofs
+
+# Fixed v1 default sizing (per node). Sizing is not hot-editable; a deliberate bump is
+# re-applied via delete+recreate (see lima:recreate).
+cpus: 4
+memory: 8GiB
+disk: 50GiB
+
+# Real L2 via socket_vmnet `shared` (192.168.105.0/24). The macOS host is on this
+# subnet and can reach node IPs, the kube-vip control-plane VIP, and the Cilium
+# LB-IPAM service VIPs directly — no portForwards needed. The NIC name is pinned to
+# `lima0` so kube-vip and Cilium can hard-code the data-plane interface.
+networks:
+- lima: shared
+  interface: lima0
+
+# Lima-managed system containerd (Cilium installs its CNI plugin into /opt/cni/bin,
+# already on the containerd CNI bin_dirs in provision step 2). containerd uses the
+# systemd cgroup driver (SystemdCgroup = true), matching kubelet cgroupDriver systemd.
+containerd:
+  system: true
+  user: false
+
+param:
+  # Role: init (ai-inf-platform-0) | join (ai-inf-platform-1/2).
+  role: "init"
+  # kube-vip control-plane VIP = kubeadm controlPlaneEndpoint.
+  vip: "192.168.105.40"
+  # Absolute host repo path (set at start time by lima:start). Anchors the writable
+  # host mounts under <repoRoot>/.local/lima/<vm>/{storage,config}. `{{.Dir}}` is
+  # ~/.lima/<name>, NOT the repo, so the repo root must be passed as a param.
+  repoRoot: ""
+  # Pod CIDR — MUST match Cilium's clusterPool (10.42.0.0/16).
+  podCIDR: "10.42.0.0/16"
+  # Service CIDR.
+  serviceCIDR: "10.43.0.0/16"
+  # Docker Hub pull-through cache endpoint (host:port) on the shared L2. containerd
+  # mirrors docker.io through this address (certs.d hosts.toml, provision step 2) so
+  # repeated cold standups do ~0 docker.io pulls and dodge the anon 429 rate limit. The
+  # default 192.168.105.50:5000 matches conf.d/10-env.toml; lima:start overrides it with
+  # the cache VM's DISCOVERED DHCP IP via `--set` (cache:up writes the real value to
+  # AI_INFRA_REGISTRY_ADDR in the gitignored 99-local.toml). See lima/templates/registry.yaml.
+  registryAddr: "192.168.105.50:5000"
+  # For role=join: base64 of the full `kubeadm join ... --control-plane` command
+  # captured from ai-inf-platform-0 (`kubeadm init` --upload-certs output + the printed
+  # certificate key). Empty for role=init.
+  joinCmdB64: ""
+
+# Per-instance WRITABLE host mounts: <repoRoot>/.local/lima/<vm-name>/{storage,config}.
+# lima:start `mkdir -p`s these host dirs BEFORE `limactl start` (virtiofs requires the
+# host dir to exist + be writable, or the local-path helper pods fail to mkdir).
+#   - storage  -> /mnt/lima/storage : rancher local-path-provisioner root (PVC data
+#                 lands here, host-visible, survives VM rebuild).
+#   - config   -> /mnt/lima/config  : editable service config (e.g. litellm proxy_config)
+#                 the operator can edit on the Mac.
+mounts:
+- location: "{{.Param.repoRoot}}/.local/lima/{{.Name}}/storage"
+  mountPoint: "/mnt/lima/storage"
+  writable: true
+- location: "{{.Param.repoRoot}}/.local/lima/{{.Name}}/config"
+  mountPoint: "/mnt/lima/config"
+  writable: true
+
+# Disable ALL host loopback port-forwarding. The Mac reaches the API via the kube-vip
+# VIP and every service via its Cilium LB-IPAM VIP on the shared L2 — never 127.0.0.1.
+# Lima's default auto-forward would bind guest control-plane ports (6443, 10250, 2379,
+# 10257/10259, …) onto host 127.0.0.1, which COLLIDES with anything else running k8s on
+# the host (e.g. any other local k8s distribution) and leaves the hostagent stuck retrying
+# "address already in use" — which can push the instance past the start timeout. We need
+# none of these forwards, so ignore the whole range (SSH is a separate core connection).
+portForwards:
+# Two rules: the first matches guest ports bound to 0.0.0.0/[::] (kubelet 10250,
+# apiserver 6443, etc.), the second the 127.0.0.1-bound ports. Without the
+# guestIPMustBeZero rule, the all-interfaces ports slip through Lima's default
+# 0.0.0.0 forward and still collide on host loopback.
+- guestIPMustBeZero: true
+  guestPortRange: [1, 65535]
+  ignore: true
+- guestPortRange: [1, 65535]
+  ignore: true
+
+provision:
+# --- step 1: prereqs + kube{adm,let,ctl} (from upstream template:k8s) ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    command -v kubeadm >/dev/null 2>&1 && exit 0
+    # Install and configure prerequisites
+    cat <<EOF | tee /etc/modules-load.d/containerd.conf
+    overlay
+    br_netfilter
+    EOF
+    modprobe overlay
+    modprobe br_netfilter
+    cat <<EOF | tee /etc/sysctl.d/99-kubernetes-cri.conf
+    net.bridge.bridge-nf-call-iptables  = 1
+    net.ipv4.ip_forward                 = 1
+    net.bridge.bridge-nf-call-ip6tables = 1
+    EOF
+    sysctl --system
+    # Installing kubeadm, kubelet and kubectl
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y apt-transport-https ca-certificates curl gpg
+    VERSION=1.36
+    mkdir -p /etc/apt/keyrings
+    K8S_REPO="https://pkgs.k8s.io/core:/stable:/v${VERSION}/deb"
+    KEYRING=/etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    curl -fsSL "${K8S_REPO}/Release.key" | gpg --dearmor -o "${KEYRING}"
+    echo "deb [signed-by=${KEYRING}] ${K8S_REPO}/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+    apt-get update
+    # NB: awk must NOT `exit` early — under `set -o pipefail` an early exit SIGPIPEs
+    # `apt-cache madison` (exit 141), failing the pipeline and aborting the install
+    # before kubeadm/kubelet/kubectl are ever installed. Read the whole stream, then
+    # take the highest matching revision.
+    K8S_PKG_VERSION="$(apt-cache madison kubeadm | awk '$3 ~ /^1\.36\.2-/ {print $3}' | sort -V | tail -n1)"
+    : "${K8S_PKG_VERSION:?kubeadm 1.36.2 not found in apt repo}"
+    apt-get install -y "kubelet=${K8S_PKG_VERSION}" "kubeadm=${K8S_PKG_VERSION}" "kubectl=${K8S_PKG_VERSION}"
+    apt-mark hold kubelet kubeadm kubectl
+    systemctl enable --now kubelet
+# --- step 2: containerd config (SystemdCgroup; CNI bin_dirs; docker.io pull-through
+#     cache mirror via certs.d; discard_unpacked_layers=false for Spegel) ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    [ -e /etc/containerd/conf.d/k8s.toml ] && exit 0
+    mkdir -p /etc/containerd/conf.d /etc/containerd/certs.d/docker.io
+    # Configuring the systemd cgroup driver + overriding the sandbox (pause) image.
+    #   - registry.config_path = /etc/containerd/certs.d : enables the per-registry
+    #     hosts.toml mirror dir (written below) so docker.io is pulled THROUGH the
+    #     ai-registry pull-through cache — repeated cold standups do ~0 docker.io pulls.
+    #   - discard_unpacked_layers = false : REQUIRED by Spegel (a later stage) so the
+    #     compressed layer blobs stay in the content store and can be peer-shared; the
+    #     default true would discard them after unpack and break Spegel's mirroring.
+    cat <<EOF >/etc/containerd/conf.d/k8s.toml
+    version = 2
+    [plugins]
+      [plugins."io.containerd.grpc.v1.cri"]
+        sandbox_image = "$(kubeadm config images list | grep pause | sort -r | head -n1)"
+        # Abort a pull that reads NO new image bytes for 1m (containerd 2.x (Lima-bundled) honors this
+        # scalar directly under the CRI plugin table; default is 5m, zero/unset = NO
+        # timeout). A transient registry.k8s.io CDN blob-stall on a control-plane image
+        # (registry.k8s.io is NOT mirrored through the docker.io-only cache) previously
+        # wedged the first cold standup with no timeout — half-open keepalive trickle,
+        # no progress, hung past the apiserver-healthz requirement. With this set the
+        # stalled pull is cancelled and containerd retries the layer, so wedged blobs
+        # self-heal in-band instead of failing the standup. MUST stay above the first
+        # sub-table header below (TOML: a table's scalar keys precede its sub-tables).
+        image_pull_progress_timeout = "1m"
+        [plugins."io.containerd.grpc.v1.cri".containerd]
+          discard_unpacked_layers = false
+          [plugins."io.containerd.grpc.v1.cri".containerd.runtimes]
+            [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+              runtime_type = "io.containerd.runc.v2"
+              [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+                SystemdCgroup = true
+        [plugins."io.containerd.grpc.v1.cri".registry]
+          config_path = "/etc/containerd/certs.d"
+      [plugins."io.containerd.cri.v1.runtime".cni]
+        bin_dirs = ["/usr/local/libexec/cni","/opt/cni/bin"]
+    EOF
+    # certs.d hosts.toml: mirror docker.io through the pull-through cache VM. server =
+    # the canonical upstream (so the digest namespace is docker.io); the [host.…] entry
+    # is the cache. capabilities pull+resolve = use it for manifest resolve AND blob
+    # pull. skip_verify = the cache serves plain HTTP on the L2 (no TLS), so containerd
+    # must not require a server cert. If the cache is down/unreachable, containerd does
+    # NOT fall through to docker.io by default — but a warmed, always-up cache is the
+    # design (cache:up brings it up before lima:start in a full standup).
+    cat <<EOF >/etc/containerd/certs.d/docker.io/hosts.toml
+    server = "https://registry-1.docker.io"
+
+    [host."http://{{.Param.registryAddr}}"]
+      capabilities = ["pull", "resolve"]
+      skip_verify = true
+    EOF
+    systemctl restart containerd
+# --- step 2b: XDP foreign-unicast drop on lima0 (host->LoadBalancer-VIP fix) ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    # socket_vmnet floods EVERY unicast frame to ALL guest VMs with no per-VM MAC
+    # filtering, so on a kube-proxy-free Cilium cluster every node's eBPF accepts a
+    # host's LoadBalancer-VIP frame -> duplicate SYN-ACKs -> the host's TCP handshake
+    # fails (VM-to-VM works; only host->VIP fails). An XDP program — which runs BEFORE
+    # Cilium's tc hook, and the XDP hook is free here since bpf-lb-acceleration is
+    # disabled — drops foreign-MAC unicast (PACKET_OTHERHOST) so ONLY the true target
+    # node answers. Broadcast/multicast (ARP, the L2-announce gratuitous ARP) always
+    # pass; correctly-addressed inter-node traffic (PACKET_HOST) always passes. The
+    # local MAC is baked in at compile time. Source: lima/xdp/drop-foreign.c.
+    if [ -f /opt/xdp/drop-foreign.o ] && systemctl is-active --quiet xdp-drop-foreign; then exit 0; fi
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get install -y clang libbpf-dev
+    install -d /opt/xdp
+    cp /mnt/lima/config/drop-foreign.c /opt/xdp/drop-foreign.c
+    ARCH="$(uname -m)-linux-gnu"
+    MAC="$(cat /sys/class/net/lima0/address)"
+    IFS=: read -r a b c d e f <<<"${MAC}"
+    clang -O2 -g -target bpf -I"/usr/include/${ARCH}" \
+      -DM0=0x${a} -DM1=0x${b} -DM2=0x${c} -DM3=0x${d} -DM4=0x${e} -DM5=0x${f} \
+      -c /opt/xdp/drop-foreign.c -o /opt/xdp/drop-foreign.o
+    IP_BIN="$(command -v ip)"
+    # systemd unit re-attaches the compiled object on every boot. The lima0 MAC is
+    # stable per Lima instance (derived, not random), so the baked-in MAC stays valid.
+    cat >/etc/systemd/system/xdp-drop-foreign.service <<UNIT
+    [Unit]
+    Description=XDP drop foreign-unicast on lima0 (socket_vmnet host->LB-VIP fix)
+    After=network-online.target
+    Wants=network-online.target
+    [Service]
+    Type=oneshot
+    RemainAfterExit=yes
+    ExecStartPre=-${IP_BIN} link set lima0 xdpgeneric off
+    ExecStart=${IP_BIN} link set lima0 xdpgeneric obj /opt/xdp/drop-foreign.o sec xdp
+    ExecStop=${IP_BIN} link set lima0 xdpgeneric off
+    [Install]
+    WantedBy=multi-user.target
+    UNIT
+    systemctl daemon-reload
+    systemctl enable --now xdp-drop-foreign.service
+# --- step 3: kube-vip static pod, then kubeadm init/join by role ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    test -e /etc/kubernetes/admin.conf && exit 0
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+
+    # Discover this node's lima0 IP (the socket_vmnet shared-network NIC). Never use
+    # eth0 (SLIRP NAT) for the control-plane advertise/node-ip — pin everything to lima0.
+    NODE_IP="$(ip -4 -o addr show dev lima0 | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+    if [ -z "${NODE_IP}" ]; then
+      echo >&2 "could not determine lima0 IP (is the socket_vmnet shared network attached?)"
+      exit 1
+    fi
+
+    # The kube-vip manifest is shipped at /mnt/lima/config/kube-vip.yaml (copied there
+    # by lima:start from lima/kube-vip.yaml). Placement differs by role:
+    #   - init: drop it into /etc/kubernetes/manifests/ BEFORE `kubeadm init` (with the
+    #     super-admin.conf host path) so the VIP comes up while init waits on /healthz.
+    #   - join: stage it OUTSIDE the manifests dir and install it AFTER `kubeadm join`
+    #     — pre-placing it would trip the DirAvailable--etc-kubernetes-manifests
+    #     preflight error (the dir must be empty for join), and ignoring that check can
+    #     mask a join that never registers the node. After join, admin.conf exists, so
+    #     the join copy uses the admin.conf host path.
+    mkdir -p /etc/kubernetes/manifests
+    if [ ! -f /mnt/lima/config/kube-vip.yaml ]; then
+      echo >&2 "kube-vip manifest not found at /mnt/lima/config/kube-vip.yaml"
+      exit 1
+    fi
+
+    {{if eq .Param.role "init"}}
+    install -m 600 /mnt/lima/config/kube-vip.yaml /etc/kubernetes/manifests/kube-vip.yaml
+    systemctl stop kubelet
+    kubeadm config images list
+    kubeadm config images pull --cri-socket=unix:///run/containerd/containerd.sock
+    systemctl start kubelet
+    # Initialize the control-plane node (kube-proxy skipped — Cilium replaces it).
+    cat <<EOF >kubeadm-config.yaml
+    kind: InitConfiguration
+    apiVersion: kubeadm.k8s.io/v1beta4
+    localAPIEndpoint:
+      advertiseAddress: ${NODE_IP}
+      bindPort: 6443
+    nodeRegistration:
+      criSocket: unix:///run/containerd/containerd.sock
+      kubeletExtraArgs:
+      - name: node-ip
+        value: ${NODE_IP}
+    skipPhases:
+    - addon/kube-proxy
+    ---
+    kind: ClusterConfiguration
+    apiVersion: kubeadm.k8s.io/v1beta4
+    controlPlaneEndpoint: "{{.Param.vip}}:6443"
+    kubernetesVersion: v1.36.2
+    networking:
+      podSubnet: "{{.Param.podCIDR}}"
+      serviceSubnet: "{{.Param.serviceCIDR}}"
+    apiServer:
+      certSANs:
+      - "127.0.0.1"
+      - "{{.Param.vip}}"
+      - "${NODE_IP}"
+    # Expose the control-plane component metrics so the cluster scraper can reach
+    # them. By default kube-controller-manager and kube-scheduler bind their secure
+    # metrics port to 127.0.0.1, and etcd serves /metrics only on
+    # http://127.0.0.1:2381 — all unreachable from an in-cluster scraper. These
+    # v1beta4 extraArgs (a LIST of name/value Args, not the v1beta3 map) flip the
+    # binds to 0.0.0.0 so the metrics path can reach them: the hand-written
+    # ServiceMonitors (kube-scheduler :10259, kube-controller-manager :10257) and
+    # the etcd PodMonitor (:2381) in kubernetes/monitoring-extra/, discovered
+    # cluster-wide by Alloy's prometheus.operator.{servicemonitors,podmonitors}.
+    # This is cluster-wide config (written into the kubeadm-config ConfigMap by
+    # 'kubeadm init' and consumed by every joiner), so all three CP nodes inherit
+    # it. Safe: the scheduler/controller-manager ports stay TLS + RBAC-gated (the
+    # scrape authenticates with the Alloy ServiceAccount bearer token), and etcd
+    # :2381 is a metrics-only listener carrying no client/peer data.
+    controllerManager:
+      extraArgs:
+      - name: bind-address
+        value: "0.0.0.0"
+    scheduler:
+      extraArgs:
+      - name: bind-address
+        value: "0.0.0.0"
+    etcd:
+      local:
+        extraArgs:
+        - name: listen-metrics-urls
+          value: "http://0.0.0.0:2381"
+    ---
+    kind: KubeletConfiguration
+    apiVersion: kubelet.config.k8s.io/v1beta1
+    cgroupDriver: systemd
+    EOF
+    kubeadm init --config kubeadm-config.yaml --upload-certs --skip-phases=addon/kube-proxy
+    # k8s >= 1.29: now that admin.conf RBAC bindings exist, swap the kube-vip host path
+    # back to admin.conf (super-admin.conf is removable post-bootstrap hardening).
+    sed -i 's#path: /etc/kubernetes/super-admin.conf#path: /etc/kubernetes/admin.conf#' /etc/kubernetes/manifests/kube-vip.yaml || true
+    # NOTE: Cilium is installed out-of-band by the k8s:cilium task (NOT here). The
+    # control-plane taint is removed by lima:start after Cilium is Ready.
+    {{else}}
+    # role=join — control-plane join via the captured `kubeadm join ... --control-plane`
+    # command (base64 in Param.joinCmdB64). Append the lima0 node-ip/advertise pins.
+    JOIN_CMD="$(printf '%s' "{{.Param.joinCmdB64}}" | base64 -d)"
+    if [ -z "${JOIN_CMD}" ]; then
+      echo >&2 "role=join requires Param.joinCmdB64 (the kubeadm join --control-plane command)"
+      exit 1
+    fi
+    # `kubeadm join` has NO --node-ip flag (unlike the InitConfiguration's
+    # nodeRegistration.kubeletExtraArgs the init node uses). Pin the kubelet's node-ip to
+    # the lima0 shared-L2 IP via /etc/default/kubelet — sourced by the kubeadm kubelet
+    # drop-in and appended after KUBELET_KUBEADM_ARGS — BEFORE the join, so this node
+    # registers with its lima0 IP, not eth0 (the SLIRP NAT NIC).
+    echo "KUBELET_EXTRA_ARGS=--node-ip=${NODE_IP}" >/etc/default/kubelet
+    # Pre-pull the control-plane images BEFORE the join, with bounded retries. The init
+    # node pre-pulls via `kubeadm config images pull`; the join path historically went
+    # straight to `kubeadm join` with no pre-pull, so a transient registry.k8s.io blob
+    # stall on a joiner surfaced only as a mid-join timeout (and registry.k8s.io is NOT
+    # mirrored through the docker.io-only cache, so there is no second chance). Pulling
+    # first — with the containerd image_pull_progress_timeout (step 2) cancelling any
+    # wedged blob, and this loop re-driving the pull — makes joiner image pulls resilient
+    # and bounded. Idempotent: already-present layers are no-ops, so a re-run after a
+    # partial pull just completes the remainder. A pull failure here is NON-fatal — the
+    # join below still pulls anything missing — so a fully-warmed cache or air-gapped
+    # joiner is never blocked by it.
+    for attempt in 1 2 3; do
+      if kubeadm config images pull --cri-socket=unix:///run/containerd/containerd.sock; then
+        break
+      fi
+      echo >&2 "kubeadm config images pull failed (attempt ${attempt}/3); retrying after backoff"
+      sleep $((attempt * 10))
+    done
+    ${JOIN_CMD} \
+      --cri-socket=unix:///run/containerd/containerd.sock \
+      --apiserver-advertise-address "${NODE_IP}"
+    # Join completed with an empty manifests dir (no preflight conflict). admin.conf now
+    # exists, so install the kube-vip static pod with the admin.conf host path; kubelet
+    # picks it up and this node joins the VIP leader election.
+    install -m 600 /mnt/lima/config/kube-vip.yaml /etc/kubernetes/manifests/kube-vip.yaml
+    sed -i 's#path: /etc/kubernetes/super-admin.conf#path: /etc/kubernetes/admin.conf#' /etc/kubernetes/manifests/kube-vip.yaml
+    {{end}}
+# --- step 4: kubeconfig for the lima user + a 127.0.0.1-rewritten host copy ---
+- mode: system
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    export KUBECONFIG=/etc/kubernetes/admin.conf
+    mkdir -p {{.Home}}/.kube
+    cp -f "$KUBECONFIG" {{.Home}}/.kube/config
+    chown -R {{.User}} {{.Home}}/.kube
+    mkdir -p /root/.kube
+    # Host copy: rewrite the server to the VIP so a per-instance copy is always usable;
+    # lima:kubeconfig is the authoritative writer (server -> https://VIP:6443).
+    sed -e "/server:/ s|https://.*:\([0-9]*\)$|https://{{.Param.vip}}:\1|" "$KUBECONFIG" >/root/.kube/config.localhost || true
+
+probes:
+- description: "kubeadm to be installed"
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 300s bash -c "until command -v kubeadm >/dev/null 2>&1; do sleep 3; done"; then
+      echo >&2 "kubeadm is not installed yet"
+      exit 1
+    fi
+  hint: |
+    See "/var/log/cloud-init-output.log" in the guest.
+- description: "kube-apiserver /healthz to be served via the node"
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    # Wait for the local apiserver health endpoint. On the init node this gates the
+    # whole bootstrap; on join nodes it confirms the joined control plane is serving.
+    if ! timeout 600s bash -c "until curl -sk https://127.0.0.1:6443/healthz 2>/dev/null | grep -q ok; do sleep 3; done"; then
+      echo >&2 "kube-apiserver /healthz not OK yet"
+      exit 1
+    fi
+  hint: |
+    Run "limactl shell <instance> sudo journalctl -u kubelet" to debug.
+    If empty, check "/var/log/cloud-init-output.log".
+- description: "admin.conf to exist"
+  script: |
+    #!/bin/bash
+    set -eux -o pipefail
+    if ! timeout 300s bash -c "until test -f /etc/kubernetes/admin.conf; do sleep 3; done"; then
+      echo >&2 "admin.conf not present yet"
+      exit 1
+    fi
+    # NOTE: the copyToHost source (/root/.kube/config.localhost) is created by the ROOT
+    # provision step 4 — never here. Probes run as the non-root lima user over SSH, so
+    # any write under /root fails with EACCES and degrades `limactl start`.
+
+# Copy this node's kubeconfig (server rewritten to the VIP) to the host. ai-inf-platform-0's
+# copy is the authoritative one; lima:kubeconfig finalizes the repo-local kubeconfig.
+copyToHost:
+- guest: "/root/.kube/config.localhost"
+  host: "{{.Dir}}/copied-from-guest/kubeconfig.yaml"
+  deleteOnStop: true
+
+message: |
+  HA kubeadm control-plane node ({{.Param.role}}). Cilium is NOT yet installed —
+  nodes are NotReady until `mise run k8s:cilium` runs. Host kubectl uses the VIP:
+  https://{{.Param.vip}}:6443 (see `mise run lima:kubeconfig`).

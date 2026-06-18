@@ -1,0 +1,114 @@
+# lima/kube-vip.yaml — kube-vip control-plane VIP static pod (ARP mode).
+#
+# This is the static pod placed in /etc/kubernetes/manifests/ on EVERY control-plane
+# node BEFORE `kubeadm init` (ai-inf-platform-0) and BEFORE `kubeadm join --control-plane`
+# (ai-inf-platform-1/2). The Lima template's provision script copies this file into the guest
+# and drops it into the manifests dir; kubelet (started before init) runs it as a
+# static pod so the control-plane VIP (192.168.105.40) is ARP-announced on lima0
+# while `kubeadm init` waits on the API health check.
+#
+# Role: CONTROL-PLANE VIP ONLY. `cp_enable=true` (--controlplane), ARP mode,
+# leader election. `svc_enable` is intentionally OMITTED — Cilium owns all
+# Service-type LoadBalancers via LB-IPAM + L2 announcements. Two L2 announcers
+# fighting over IPs is the failure mode we avoid by splitting responsibilities.
+#
+# k8s >= 1.29 fix (CRITICAL): the host path of the kubeconfig volume must point at
+# /etc/kubernetes/super-admin.conf during `kubeadm init` — `admin.conf` is RBAC-bound
+# to kubeadm:cluster-admins and its bindings do not exist until init finishes, so
+# kube-vip using admin.conf cannot authenticate to the API → VIP never comes up →
+# `kubeadm init` deadlocks on the API health check. The CONTAINER mountPath stays
+# /etc/kubernetes/admin.conf (kube-vip hard-expects that path). After init the
+# template provision script sed-swaps the host path back to admin.conf.
+#
+# kube-vip version pin: ghcr.io/kube-vip/kube-vip:v1.2.1 (latest stable; the old
+# v0.x line is superseded — do NOT use v0.4.0/v0.5.0 tags from older blog posts).
+#
+# IP parameterization: the control-plane VIP `address` below is the placeholder
+# `${AI_INFRA_CP_VIP}`. This file is NOT a kustomize input — it is a static pod seeded
+# into each VM's config mount by lima:start, which renders it with `envsubst` (only
+# AI_INFRA_CP_VIP is substituted; default 192.168.105.40). `vip_interface: lima0` is
+# the fixed socket_vmnet NIC and stays literal.
+apiVersion: v1
+kind: Pod
+metadata:
+  creationTimestamp: null
+  name: kube-vip
+  namespace: kube-system
+  # Label the static pod so the metrics overlay's PodMonitor can select it.
+  # A static pod's mirror pod (kube-vip-<node>) inherits ONLY the labels written
+  # here — kubelet adds none of its own — so without this label there is no
+  # selector the PodMonitor (kubernetes/monitoring-extra/kube-vip-podmonitor.yaml)
+  # could match. The metrics listener is kube-vip's prometheus_server :2112 env
+  # (below); the PodMonitor scrapes that hostNetwork port via a numeric targetPort.
+  labels:
+    app.kubernetes.io/name: kube-vip
+spec:
+  containers:
+  - args:
+    - manager
+    env:
+    - name: vip_arp
+      value: "true"
+    - name: port
+      value: "6443"
+    - name: vip_interface
+      value: lima0
+    - name: vip_cidr
+      value: "32"
+    - name: cp_enable
+      value: "true"
+    - name: cp_namespace
+      value: kube-system
+    - name: vip_ddns
+      value: "false"
+    # svc_enable intentionally OMITTED (Cilium handles Service LoadBalancers).
+    - name: vip_leaderelection
+      value: "true"
+    - name: vip_leasename
+      value: plndr-cp-lock
+    - name: vip_leaseduration
+      value: "5"
+    - name: vip_renewdeadline
+      value: "3"
+    - name: vip_retryperiod
+      value: "1"
+    - name: address
+      value: ${AI_INFRA_CP_VIP}
+    - name: prometheus_server
+      value: :2112
+    image: ghcr.io/kube-vip/kube-vip:v1.2.1
+    imagePullPolicy: IfNotPresent
+    name: kube-vip
+    # Declare the prometheus_server :2112 metrics port as a NAMED container port.
+    # This is load-bearing for the metrics PodMonitor
+    # (kubernetes/monitoring-extra/kube-vip-podmonitor.yaml): prometheus-operator/
+    # Alloy resolve a PodMonitor endpoint to a NAMED or declared port, expanding it
+    # into a `keep` relabel rule on the pod's declared container ports. A pod that
+    # declares NO port (the kube-vip default) generates NO scrape target, so the
+    # PodMonitor would silently match nothing. With hostNetwork this containerPort
+    # is purely informational (it does not change kube-vip's bind) but makes the
+    # port discoverable by name.
+    ports:
+    - name: metrics
+      containerPort: 2112
+      protocol: TCP
+    resources: {}
+    securityContext:
+      capabilities:
+        add:
+        - NET_ADMIN
+        - NET_RAW
+        - SYS_TIME
+    volumeMounts:
+    - mountPath: /etc/kubernetes/admin.conf      # container path UNCHANGED
+      name: kubeconfig
+  hostAliases:
+  - hostnames:
+    - kubernetes
+    ip: 127.0.0.1
+  hostNetwork: true
+  volumes:
+  - hostPath:
+      path: /etc/kubernetes/super-admin.conf     # HOST path = super-admin.conf for k8s >=1.29
+    name: kubeconfig
+status: {}
