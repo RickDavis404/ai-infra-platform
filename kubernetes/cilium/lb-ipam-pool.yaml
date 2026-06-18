@@ -1,0 +1,20 @@
+# CiliumLoadBalancerIPPool — service-VIP pool from the socket_vmnet shared subnet.
+#
+# LB-IPAM hands out IPs from this pool to Service type=LoadBalancer objects; the
+# Cilium L2 announcement policy (l2-announcement-policy.yaml) then ARP-announces the
+# assigned IP on lima0 so the macOS host (same 192.168.105.0/24 L2) reaches it
+# directly — no port-forward. The pool sits above the vmnet DHCP range so DHCP never
+# collides with a service VIP (with only 3 VMs the low range is used; .200-.250 is
+# collision-safe). Service assignments (decision D005): LiteLLM .200, Langfuse-web
+# .201, Grafana .202, in-cluster OTel OTLP .203, Hubble UI .204.
+#
+# apiVersion cilium.io/v2 — CiliumLoadBalancerIPPool is GA in Cilium 1.19 (was
+# v2alpha1 in older minors). Do NOT cross it with the L2 policy's v2alpha1.
+apiVersion: "cilium.io/v2"
+kind: CiliumLoadBalancerIPPool
+metadata:
+  name: lima-shared-pool
+spec:
+  blocks:
+  - start: "192.168.105.200"
+    stop: "192.168.105.250"
