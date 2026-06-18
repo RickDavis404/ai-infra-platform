@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Application / data / observability / operator namespaces for the platform.
+# Cilium and Hubble live in the pre-existing `kube-system` namespace and are NOT
+# created here. The observability (LGTM) plane namespace is named `lgtm` (decision D001).
+#
+# Apply order (see kubernetes/README.md): operators -> cilium -> namespaces ->
+# stores -> apps -> lgtm -> ingress.
+resources:
+- namespaces.yaml
+- resource-controls.yaml

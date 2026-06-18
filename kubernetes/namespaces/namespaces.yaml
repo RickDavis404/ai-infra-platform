@@ -1,0 +1,98 @@
+# Platform namespaces. The observability (LGTM) plane namespace is `lgtm`
+# (decision D001: §13 datasource URLs + OTel exporters hardcode *.lgtm.svc.cluster.local).
+# Cilium/Hubble use kube-system and are not declared here.
+#
+# Pod Security Admission is intentionally conservative:
+# - app/data/operator namespaces enforce baseline and audit/warn restricted;
+# - lgtm enforces privileged because the OTel Collector DaemonSet uses hostPath
+#   checkpoints for filelog state. Tighten after a live PSA audit passes.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: litellm
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: gateway
+    ai-infra-platform/plane: app
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langfuse
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: observability-app
+    ai-infra-platform/plane: app
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: langfuse-data
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: data-stores
+    ai-infra-platform/plane: data
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lgtm
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: lgtm
+    ai-infra-platform/plane: observability
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: cnpg-operator
+    ai-infra-platform/plane: operators
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: clickhouse-system
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: clickhouse-operator
+    ai-infra-platform/plane: operators
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.36
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.36
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.36
