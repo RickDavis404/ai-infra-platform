@@ -1,0 +1,123 @@
+# Cilium v1.20.0-pre.3 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
+# Pinned in kustomization.yaml; this file is the committed, declarative config.
+# See README.md for provenance, and decision D005 + research feedback-v2/
+# ha-networking.md §2 for the kube-proxy-free + service-VIP rationale.
+
+# --- kube-proxy replacement + API reachability (no kube-proxy) ---
+# kubeadm initializes with `--skip-phases=addon/kube-proxy`, so there is no
+# kube-proxy to program the `kubernetes` ClusterIP. Cilium replaces it entirely and
+# MUST be told the real apiserver out-of-band. In this HA cluster that address is the
+# kube-vip control-plane VIP (192.168.105.40:6443), NOT a single node IP — otherwise
+# losing that one node would sever every Cilium agent from the API. The VIP exists
+# before Cilium because kube-vip is a static pod brought up during `kubeadm init`.
+kubeProxyReplacement: true
+k8sServiceHost: 192.168.105.40
+k8sServicePort: 6443
+
+# --- IPAM / routing (real L2 192.168.105.0/24) ---
+# ipam.mode=kubernetes: the pod CIDR comes from kubeadm's networking.podSubnet; keep
+# the clusterPool in sync at 10.42.0.0/16. routingMode=native is correct on a flat L2
+# (all nodes same subnet); autoDirectNodeRoutes installs pod routes between nodes.
+# devices pins the data-plane NIC to lima0 (eth0 is SLIRP NAT — never bind there).
+# Tunnel (vxlan) is the documented fallback if native pod-to-pod ever proves flaky.
+ipam:
+  mode: kubernetes
+  operator:
+    clusterPoolIPv4PodCIDRList:
+      - "10.42.0.0/16"
+routingMode: native
+ipv4NativeRoutingCIDR: 10.42.0.0/16
+autoDirectNodeRoutes: true
+devices: lima0
+
+# --- L2 announcements + LB-IPAM (service VIPs on lima0) ---
+# Cilium owns all Service LoadBalancers: LB-IPAM assigns IPs from the
+# CiliumLoadBalancerIPPool (192.168.105.200-.250) and L2 announcements ARP them on
+# lima0 so the macOS host (same subnet) reaches them directly. externalIPs.enabled
+# allows announcing external/LB IPs. The L2 policy's interface regex must match a
+# device listed in `devices` above (lima0).
+l2announcements:
+  enabled: true
+externalIPs:
+  enabled: true
+
+# Bump the API client rate limit — L2 announcement + LB-IPAM leases hammer the API
+# well past the default 5/10 qps.
+k8sClientRateLimit:
+  qps: 50
+  burst: 100
+
+# --- Operator HA (3-node cluster) ---
+# 2 replicas with leader election, overriding the single-replica single-node posture.
+operator:
+  replicas: 2
+  prometheus:
+    enabled: true
+    # Operator metrics emit a ServiceMonitor; Alloy discovers all SMs cluster-wide.
+    serviceMonitor:
+      enabled: true
+
+# Roll Cilium pods on config changes.
+rollOutCiliumPods: true
+
+# --- Hubble: relay + UI + metrics ---
+# Flow observability; feeds the LGTM/Grafana stack. Hubble Relay requires TCP port
+# 4244 open on every Cilium node; verify with `cilium status` (Relay should report
+# OK). Hubble UI is exposed as a LoadBalancer service VIP (192.168.105.204) via the
+# ingress/service overlay, not via Ingress.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    prometheus:
+      enabled: true
+      # Hubble Relay metrics (:9966) emit a ServiceMonitor; Alloy discovers all
+      # ServiceMonitors cluster-wide (no label selector), so no extra labels needed.
+      serviceMonitor:
+        enabled: true
+  ui:
+    enabled: true
+  metrics:
+    # The verbose enabled list is kept verbatim: the :opt=val;... suffixes add
+    # workload-name source/destination context and (for HTTP) exemplars plus a rich
+    # labelsContext. Without them the series collapse and per-workload latency/error
+    # breakdowns cannot be sliced in the Hubble L7 dashboards.
+    enabled:
+      - "dns:query;ignoreAAAA;destinationContext=workload-name"
+      - "drop:sourceContext=workload-name;destinationContext=workload-name"
+      - "tcp:sourceContext=workload-name;destinationContext=workload-name"
+      - "flow:sourceContext=workload-name;destinationContext=workload-name"
+      - "port-distribution"
+      - "icmp"
+      - "http:exemplars=true;sourceContext=workload-name;destinationContext=workload-name;labelsContext=source_ip,source_namespace,source_workload,destination_ip,destination_namespace,destination_workload,traffic_direction"
+    # Hubble per-flow metrics (hubble-metrics service) emit a ServiceMonitor that
+    # Alloy discovers cluster-wide.
+    serviceMonitor:
+      enabled: true
+
+# --- Prometheus scraping via ServiceMonitor (discovered by Alloy) ---
+# serviceMonitor.enabled=true: the cilium-agent metrics service (:9962) emits a
+# ServiceMonitor. Alloy is configured to discover ALL ServiceMonitors cluster-wide
+# (no label selector), so this scrapes without any extra producer-side labels.
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    # The ServiceMonitor/PodMonitor CRDs are vendored at kubernetes/monitoring-crds
+    # and applied early in k8s:apply (before this chart). trustCRDsExist=true tells
+    # the chart's validate.yaml to skip its render-time CRD-existence check (which
+    # otherwise fails `kustomize build` because helm template can't see the cluster).
+    # This single flag gates the agent, operator, envoy, and hubble-relay SM blocks.
+    trustCRDsExist: true
+
+# --- L7 visibility / Envoy add-on — OPT-IN ONLY, NOT set here ---
+# v1 DROPS the cluster-wide L7 visibility policy. L7 HTTP visibility is an opt-in
+# observability add-on with a documented HARD safety coupling (policyAuditMode +
+# a CCWNP that attaches to every endpoint, safe only while audit mode is on). The
+# Envoy tuning below is enabled ONLY together with that add-on; it is intentionally
+# NOT present in this default (no-L7) install:
+#
+#   envoy:
+#     log:
+#       accessLogBufferSize: 65536            # default 4096 truncated verbose L7 records
+#     streamIdleTimeoutDurationSeconds: 900   # long prompt-processing windows

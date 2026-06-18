@@ -1,0 +1,26 @@
+# CiliumL2AnnouncementPolicy — ARP-announce LB-IPAM service VIPs on lima0.
+#
+# loadBalancerIPs: true announces the IPs LB-IPAM writes to a service's
+# .status.loadBalancer.ingress. interfaces restricts the ARP to lima0 (the
+# socket_vmnet NIC; the regex must match a device in the Cilium `devices` Helm value).
+# nodeSelector matches any control-plane node — in this HA cluster all 3 nodes are
+# control-plane, so any of them may answer ARP, and another takes over on failover.
+# serviceSelector is omitted, so all LoadBalancer services match. Keep matched
+# services at externalTrafficPolicy: Cluster (L2 announcements are incompatible with
+# Local, which can drop traffic on pod-less nodes).
+#
+# apiVersion cilium.io/v2alpha1 — CiliumL2AnnouncementPolicy is still Beta (v2alpha1)
+# in Cilium 1.19. Do NOT cross it with the LB-IPAM pool's v2.
+apiVersion: "cilium.io/v2alpha1"
+kind: CiliumL2AnnouncementPolicy
+metadata:
+  name: lima-lb-l2
+spec:
+  loadBalancerIPs: true
+  externalIPs: false
+  interfaces:
+  - "^lima0$"
+  nodeSelector:
+    matchExpressions:
+    - key: node-role.kubernetes.io/control-plane
+      operator: Exists
