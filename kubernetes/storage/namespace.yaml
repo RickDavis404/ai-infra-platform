@@ -1,0 +1,16 @@
+# Namespace for the rancher local-path-provisioner control plane.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: local-path-storage
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: storage
+    ai-infra-platform/plane: storage
+    # local-path helper pods may need host-path access on provision/delete.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.33
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.33
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.33

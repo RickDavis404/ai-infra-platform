@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# rancher local-path-provisioner pinned to v0.0.36, configured to provision PVs under
+# /mnt/lima/storage (the writable virtiofs host mount). kubeadm ships no built-in
+# storage provisioner, so this supplies the default StorageClass. See research
+# feedback-v2/lima.md §5 for the host<->guest data chain.
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - config.yaml
+  - storageclass.yaml
