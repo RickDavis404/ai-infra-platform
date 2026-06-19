@@ -1,0 +1,64 @@
+# fnox.toml  (COMMITTED TEMPLATE — declares the secret set; carries NO ciphertext)
+#
+# This file declares every sensitive key the lab needs (§11.2) plus the age
+# provider config. The `<fnox+age-managed>` markers are intentional placeholders:
+# the secret-scan / scrub guards (§11.6) treat them as the allowed committed form.
+#
+# REAL ciphertext lives in the GITIGNORED sibling `fnox.local.toml`. fnox merges
+# config hierarchically — `fnox.local.toml` takes precedence over this file at the
+# same level (https://fnox.jdx.dev/guide/hierarchical-config.html) — so every
+# `fnox get` resolves your real sealed values while this committed template never
+# changes. Nothing decryptable is ever committed, even in ciphertext form.
+#
+# Fresh checkout bootstrap (see secrets/README.md):
+#
+#     mise run secrets:keygen    # age key -> secrets/age/key.txt; recipients ->
+#                                #   secrets/.agerecipients + fnox.local.toml
+#     mise run secrets:generate  # random values -> gitignored secrets/shared.env
+#     mise run secrets:seal      # encrypt shared.env -> fnox.local.toml ciphertext
+#
+# Until then, `fnox get` on these markers fails and the mise env loader degrades
+# gracefully (vars skipped with a warning) — a bare clone is safe AND functional.
+
+default_provider = "age"
+
+[providers]
+# Recipients are age PUBLIC keys (safe to publish — they cannot decrypt anything).
+# `mise run secrets:keygen` writes YOUR recipient into fnox.local.toml [providers]
+# (which overrides this one) and keeps secrets/.agerecipients in sync.
+age = { type = "age", recipients = ["age1askmfmrkjf7ln3drgngdz2txt88nd4spgv52f6ekcu9hpv3gpy6skp79sf"] }
+
+# The decryption identity is supplied at runtime; it never lives in a committed
+# file. Preferred order (most hygienic first):
+#   1) macOS Keychain-backed identity (private key never touches a repo-visible file):
+#        age = { type = "age", recipients = [...], identity = { provider = "keychain", value = "age-key" } }
+#   2) FNOX_AGE_KEY_FILE pointing at an age/SSH key file (no password-protected SSH keys)
+#   3) FNOX_AGE_KEY holding the AGE-SECRET-KEY-... string directly (least preferred)
+
+[secrets]
+# Key set mirrors AI_INFRA_FNOX_SECRET_KEYS in .config/mise/lib/secrets.sh.
+# --- LiteLLM ---
+LITELLM_MASTER_KEY = { provider = "age", value = "<fnox+age-managed>" }
+CLAUDE_CODE_LITELLM_VIRTUAL_KEY = { provider = "age", value = "<fnox+age-managed>" }
+CODEX_LITELLM_VIRTUAL_KEY = { provider = "age", value = "<fnox+age-managed>" }
+SMOKE_TEST_LITELLM_VIRTUAL_KEY = { provider = "age", value = "<fnox+age-managed>" }
+
+# --- Grafana ---
+GRAFANA_ADMIN_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+
+# --- Langfuse ---
+LANGFUSE_ADMIN_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_PUBLIC_KEY = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_SECRET_KEY = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_SALT = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_NEXTAUTH_SECRET = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_ENCRYPTION_KEY = { provider = "age", value = "<fnox+age-managed>" }
+LANGFUSE_PG_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+
+# --- Datastores ---
+LITELLM_PG_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+GRAFANA_PG_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+CLICKHOUSE_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+VALKEY_PASSWORD = { provider = "age", value = "<fnox+age-managed>" }
+SEAWEEDFS_S3_ACCESS_KEY = { provider = "age", value = "<fnox+age-managed>" }
+SEAWEEDFS_S3_SECRET_KEY = { provider = "age", value = "<fnox+age-managed>" }
