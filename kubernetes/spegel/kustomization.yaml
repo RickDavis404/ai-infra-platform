@@ -1,0 +1,36 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Spegel — peer-to-peer OCI registry mirror (https://github.com/spegel-org/spegel),
+# inlined via Helm and rendered with `kustomize build --enable-helm`. The chart is an
+# OCI artifact at ghcr.io/spegel-org/helm-charts; the pin is exact (0.7.2 / appVersion
+# v0.7.2) and does not float. Re-verify the values schema (spegel.containerdRegistryConfigPath,
+# spegel.additionalMirrorTargets, spegel.prependExisting, tolerations) on any bump.
+# See README.md for provenance and the cache-fallback wiring.
+namespace: spegel
+
+helmCharts:
+  - name: spegel
+    repo: oci://ghcr.io/spegel-org/helm-charts
+    version: 0.7.2
+    releaseName: spegel
+    namespace: spegel
+    valuesFile: values.yaml
+    includeCRDs: true
+
+# The spegel namespace is created here (it is NOT in kubernetes/namespaces, which is
+# the k8s:apply app-stack set applied AFTER Spegel). Listed first so kustomize emits
+# it ahead of the namespaced chart objects.
+resources:
+  - namespace.yaml
+
+# Demote the chart's spegel-registry Service from NodePort to ClusterIP (lab policy:
+# no NodePort surface — validate:no-nodeport). Peer mirroring uses the registry
+# hostPort (30020) as the primary mirror-target, so removing the NodePort does not
+# break peer-to-peer layer serving. See patches/registry-clusterip.yaml for the full
+# rationale.
+patches:
+  - path: patches/registry-clusterip.yaml
+    target:
+      kind: Service
+      name: spegel-registry
