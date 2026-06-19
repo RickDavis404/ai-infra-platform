@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# CloudNativePG operator — single instance, watches all namespaces (default),
+# reconciles both langfuse-pg (langfuse-data) and litellm-pg (litellm) clusters.
+# Pin: chart 0.29.0 (PG 18 line). includeCRDs so the postgresql.cnpg.io CRDs land.
+helmCharts:
+  - name: cloudnative-pg
+    repo: https://cloudnative-pg.github.io/charts
+    version: 0.29.0
+    releaseName: cnpg
+    namespace: cnpg-system
+    includeCRDs: true
+    valuesFile: values.yaml

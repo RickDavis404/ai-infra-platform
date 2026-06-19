@@ -1,0 +1,52 @@
+# Altinity ClickHouse operator values (chart altinity-clickhouse-operator 0.27.1).
+# Only the overrides that matter for this platform are set; everything else
+# inherits the chart defaults.
+
+# Single operator replica. The operator is a control-plane reconciler, not a
+# data-path component; leader election is not used by this chart, so running a
+# second replica would only duplicate watches.
+replicaCount: 1
+
+# CRITICAL: watch ALL namespaces. An Altinity operator that does NOT run in
+# `kube-system` watches only its own namespace by default. This operator runs
+# in `clickhouse-system`, so it would silently ignore the CHI / CHK custom
+# resources that live in `langfuse-data` unless forced to watch everything.
+configs:
+  files:
+    config.yaml:
+      watch:
+        namespaces:
+          include: [".*"]
+
+# CRITICAL: disable the chart's CRD install/upgrade hook Job entirely.
+#
+# Two independent reasons:
+#  1. REDUNDANT: the helmCharts block sets `includeCRDs: true`, so all four
+#     ClickHouse CRDs are rendered into this overlay and applied server-side by
+#     `k8s:apply` directly. The hook Job (a Helm pre-install/pre-upgrade hook
+#     that just `kubectl apply`s the same CRDs) adds nothing — kustomize does not
+#     even honor Helm hook semantics, so it runs as a plain Job on every apply.
+#  2. BROKEN + un-fixable cleanly: the chart defaults the hook image to
+#     a forbidden upstream kubectl image (violates the no-Bitnami rule AND uses a floating tag).
+#     The obvious open-registry swap, `rancher/kubectl`, ships NO `/bin/sh`, but
+#     the chart's hook command is `/bin/sh -c ...` — so the container dies at
+#     startup with `exec: "/bin/sh": no such file or directory` (StartError ->
+#     CrashLoopBackOff), never reaches Completed, and fails the "all pods
+#     Running/Completed in clickhouse-system" acceptance gate. Rather than hunt a
+#     shell-bearing, allowed, pinned kubectl image for a Job we do not need,
+#     disable the hook: CRDs come from `includeCRDs: true`, the operator is fully
+#     functional without it, and clickhouse-system stays clean.
+crdHook:
+  enabled: false
+
+# Emit a ServiceMonitor for the operator's metrics-exporter. This creates two
+# endpoints: ch-metrics (:8888 — ClickHouse cluster metrics aggregated by the
+# operator's altinity/metrics-exporter across every CHI it manages) and op-metrics
+# (:9999 — the operator's own reconcile metrics). Alloy discovers all
+# ServiceMonitors cluster-wide (no label selector), so no extra labels are needed.
+# NOTE: this is the OPERATOR-side scrape path. The CHI's native per-replica
+# :9363 endpoint and the CHK's :7000 endpoint are raw-CR pod endpoints with no
+# chart/CRD-native ServiceMonitor; if direct per-replica scraping is also wanted,
+# that is a hand-written PodMonitor (gap-agent scope), not this chart.
+serviceMonitor:
+  enabled: true
