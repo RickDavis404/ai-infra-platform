@@ -1,0 +1,77 @@
+# Spegel v0.7.2 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
+# Pinned in kustomization.yaml; this file is the committed, declarative config.
+# See README.md for provenance and the peer-to-peer-mirror rationale.
+#
+# Spegel runs as a DaemonSet on EVERY node and turns each node's containerd content
+# store into a peer-shared OCI mirror: once one node has pulled an image, the others
+# pull its layers from that peer over the cluster network instead of re-hitting
+# docker.io. A single cold cluster build therefore does ~one docker.io pull per image
+# cluster-wide, with the persistent pull-through cache VM as the next fallback.
+
+# --- Image pull policy ---
+# IfNotPresent so a node that already has the Spegel image (warm content store)
+# does not re-pull it — matches the repo-wide rate-limit hardening (task #21).
+image:
+  pullPolicy: IfNotPresent
+
+spegel:
+  # containerd registry config_path MUST match the Lima k8s-cilium template
+  # (lima/templates/k8s-cilium.yaml step 2 sets
+  #   [plugins."io.containerd.grpc.v1.cri".registry].config_path = "/etc/containerd/certs.d")
+  # so Spegel writes its per-registry hosts.toml mirror entries into the same dir
+  # containerd already reads.
+  containerdRegistryConfigPath: "/etc/containerd/certs.d"
+
+  # Spegel manages (adds) its own containerd mirror configuration on each node.
+  containerdMirrorAdd: true
+
+  # PREPEND rather than replace. The template already wrote
+  # /etc/containerd/certs.d/docker.io/hosts.toml pointing at the persistent
+  # pull-through cache. prependExisting=true makes Spegel PREPEND its peer-mirror
+  # [host] entry ABOVE that existing cache entry instead of overwriting the file, so
+  # the resolution order per pull becomes: Spegel peers first, then the pre-existing
+  # cache entry, with docker.io as containerd's upstream `server`. (additionalMirrorTargets
+  # below ALSO appends the cache to every registry Spegel manages, belt-and-suspenders.)
+  prependExisting: true
+
+  # Mirror ALL registries (empty list = every registry containerd pulls from is
+  # peer-mirrored). docker.io, ghcr.io, registry.k8s.io, quay.io etc. all benefit.
+  mirroredRegistries: []
+
+  # Persistent pull-through cache fallback. After Spegel fails to find a layer among
+  # peers it falls through to these additional mirror targets BEFORE the upstream
+  # registry. http:// (plain HTTP, no TLS) on the shared L2, matching the template's
+  # docker.io hosts.toml [host."http://<addr>"] cache entry.
+  # NOTE: the host:port below is the COMMITTED DEFAULT (conf.d/10-env.toml
+  # AI_INFRA_REGISTRY_ADDR default). The k8s:spegel task sed-substitutes the env
+  # value (cache:up's discovered DHCP IP) at render time, exactly like k8s:cilium
+  # does for the VIP — see .config/mise/tasks/k8s/spegel.sh. A bare checkout renders
+  # this documented default.
+  additionalMirrorTargets:
+    - "http://192.168.105.50:5000"
+
+  # Resolve tags to digests so peers can be addressed by content digest (required for
+  # reliable peer routing). Default, set explicitly for clarity.
+  resolveTags: true
+
+# --- Scheduling: run on ALL nodes including control-plane ---
+# Every node in this cluster is a control-plane node (3x stacked-etcd CP), and the
+# control-plane taint is removed at bring-up (lima:start) so workloads schedule
+# everywhere. These tolerations (the chart's defaults, pinned here explicitly) let
+# the DaemonSet pod run on every node regardless of any NoSchedule/NoExecute taint —
+# so Spegel covers all 3 nodes even if a taint is re-applied.
+tolerations:
+  - key: CriticalAddonsOnly
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+  - effect: NoSchedule
+    operator: Exists
+
+# Metrics: Spegel emits a ServiceMonitor that Alloy discovers cluster-wide (Alloy
+# is configured with no label selector, so no producer-side labels are required).
+# The ServiceMonitor + PodMonitor CRDs are vendored at kubernetes/monitoring-crds.
+serviceMonitor:
+  enabled: true
+grafanaDashboard:
+  enabled: false

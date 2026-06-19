@@ -1,0 +1,22 @@
+# Spegel namespace. Spegel is a peer-to-peer OCI registry mirror that runs as a
+# DaemonSet on every node and serves already-pulled image layers to peers, so a
+# cold cluster build does ~one docker.io pull per image cluster-wide. It is NOT in
+# kubernetes/namespaces/namespaces.yaml because that set is applied by k8s:apply
+# (the app stack), which runs AFTER k8s:spegel — Spegel must be up before the heavy
+# app images are pulled. Its task (k8s:spegel) creates this namespace itself.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: spegel
+  labels:
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: registry-mirror
+    ai-infra-platform/plane: infra
+    # Spegel is a node-local registry mirror DaemonSet with host integration.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.33
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.33
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.33
