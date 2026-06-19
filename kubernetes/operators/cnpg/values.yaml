@@ -1,0 +1,35 @@
+# CloudNativePG operator values (chart cloudnative-pg 0.29.0).
+#
+# The operator runs as a single instance in cnpg-system and watches ALL
+# namespaces (the chart default — an empty watchNamespaces list), so one operator
+# reconciles both the langfuse-pg (langfuse-data) and litellm-pg (litellm)
+# Cluster CRs. Do not scope it to a single namespace.
+config:
+  data:
+    # Watch all namespaces (default behaviour). Leave empty for cluster-wide.
+    WATCH_NAMESPACE: ""
+
+# Operator self-metrics may stay off; per-cluster Postgres metrics are exposed
+# via pod annotations (:9187 /metrics) on each Cluster, not via the operator.
+monitoring:
+  podMonitorEnabled: false
+  grafanaDashboard:
+    create: false
+
+# CRDs ship with the chart. In this chart the postgresql.cnpg.io CRDs are emitted
+# by templates gated on `crds.create`, and kustomize's helm inflator surfaces them
+# via that path (not the chart's crds/ dir), so `crds.create: true` is required for
+# `includeCRDs: true` to actually land the 10 CRDs. No duplication results.
+crds:
+  create: true
+
+# Minimal-but-bounded operator footprint (out of BestEffort QoS).
+resources:
+  requests:
+    cpu: 100m
+    memory: 200Mi
+  limits:
+    memory: 256Mi
+
+# One operator replica is sufficient; leader election still guards restarts.
+replicaCount: 1
