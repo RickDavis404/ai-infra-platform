@@ -1,0 +1,45 @@
+# local-path-provisioner config: provision root pinned to the writable host mount.
+#
+# nodePathMap DEFAULT_PATH_FOR_NON_LISTED_NODES -> /mnt/lima/storage makes every node
+# provision under its own virtiofs mount (each node sees the same guest path but a
+# different host backing dir <repoRoot>/.local/lima/<vm>/storage), so PVC data lands
+# host-visible and per-node. The host dir is created (mkdir -p) by lima:start before
+# the VM boots, and the mount is writable, so the helper pod's mkdir/rmdir succeed.
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: local-path-config
+  namespace: local-path-storage
+data:
+  config.json: |-
+    {
+      "nodePathMap":[
+        {
+          "node":"DEFAULT_PATH_FOR_NON_LISTED_NODES",
+          "paths":["/mnt/lima/storage"]
+        }
+      ]
+    }
+  setup: |-
+    #!/bin/sh
+    set -eu
+    mkdir -m 0777 -p "$VOL_DIR"
+  teardown: |-
+    #!/bin/sh
+    set -eu
+    rm -rf "$VOL_DIR"
+  helperPod.yaml: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: helper-pod
+    spec:
+      priorityClassName: system-node-critical
+      tolerations:
+        - key: node.kubernetes.io/disk-pressure
+          operator: Exists
+          effect: NoSchedule
+      containers:
+      - name: helper-pod
+        image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+        imagePullPolicy: IfNotPresent

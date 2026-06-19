@@ -1,0 +1,47 @@
+# rancher local-path-provisioner Deployment (image pinned to v0.0.36).
+# Provisions hostPath-backed PVs under the node path configured in local-path-config.
+# In this cluster that path is /mnt/lima/storage — the writable virtiofs mount backed
+# by the host's <repoRoot>/.local/lima/<vm>/storage, so PVC data is host-visible and
+# survives VM rebuild (HA via store-level replication, since the mount is node-pinned).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: local-path-provisioner
+  namespace: local-path-storage
+  labels:
+    app: local-path-provisioner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: local-path-provisioner
+  template:
+    metadata:
+      labels:
+        app: local-path-provisioner
+    spec:
+      serviceAccountName: local-path-provisioner-service-account
+      containers:
+        - name: local-path-provisioner
+          image: docker.io/rancher/local-path-provisioner:v0.0.36@sha256:1eba82e9c386038b4af6d69cca7519fac738c28c42735ed48ce70c882ad0d80f
+          imagePullPolicy: IfNotPresent
+          command:
+            - local-path-provisioner
+            - --debug
+            - start
+            - --config
+            - /etc/config/config.json
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config/
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: CONFIG_MOUNT_PATH
+              value: /etc/config/
+      volumes:
+        - name: config-volume
+          configMap:
+            name: local-path-config

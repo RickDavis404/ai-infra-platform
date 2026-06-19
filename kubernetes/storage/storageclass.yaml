@@ -1,0 +1,19 @@
+# Default StorageClass backed by rancher local-path-provisioner.
+#
+# nodePath pins the exact dir (mirrors the nodePathMap entry) so the provisioner does
+# not random-select among multiple paths. pathPattern lays out PVC data under
+# <namespace>/<pvc-name>/. WaitForFirstConsumer binds the PV to the node where the
+# consuming pod schedules, so data lands on that node's host mount. Marked the
+# cluster default so PVCs without an explicit storageClassName use it.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: local-path
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: rancher.io/local-path
+parameters:
+  nodePath: /mnt/lima/storage
+  pathPattern: "{{ .PVC.Namespace }}/{{ .PVC.Name }}/"
+volumeBindingMode: WaitForFirstConsumer
+reclaimPolicy: Delete
