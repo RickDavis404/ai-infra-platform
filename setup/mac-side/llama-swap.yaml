@@ -1,0 +1,125 @@
+# setup/mac-side/llama-swap.yaml
+#
+# Single OpenAI-compatible proxy on 127.0.0.1:38080 (spec §8.4 / §9.1 / §9.6).
+# llama-swap matches the requested model name to a `models:` entry and spawns
+# exactly one backend child at a time, swapping idle children out under the idle
+# TTL. GGUF entries route through the stderr-tee wrapper staged at
+# ~/.local/bin/ai-infra-llama-server-wrapper.sh (the Go parent does not proxy a
+# child's stderr; the wrapper tees it to a log the host OTel Collector ships).
+# MLX entries spawn mlx_lm.server directly (no wrapper, no --metrics; MLX has no
+# metrics endpoint). Only the aggregate GET /metrics on the listen port is
+# scraped — NEVER the per-model /upstream/<model>/metrics path, which auto-loads
+# the model on every scrape.
+#
+# Load-bearing POC rule: comments live ABOVE a `cmd:` key (or in a macro's
+# leading comment lines), NEVER on a `cmd:` argument line. The llama-server-stub
+# macro routes the command through `/bin/zsh -lc 'exec ... "$@"'`; a stray inline
+# `#` token can survive into the shell layer and silently truncate the command.
+# Keep every `cmd:` block as bare one-token-per-line argv.
+#
+# Model names here MUST match the LiteLLM `model_list` entries in lockstep
+# (LiteLLM strips the `mac-local/` prefix and forwards the bare name; see §9.3).
+# The default chat weights path is supplied via the AI_INFRA_DEFAULT_CHAT_MODEL_PATH
+# environment variable — there is NO hardcoded absolute model path in the repo.
+
+listen: "127.0.0.1:38080"
+ttl: "10m"
+
+macros:
+  # GGUF backend stub: zsh login shell execs the stderr-tee wrapper, which in turn
+  # execs /opt/homebrew/bin/llama-server with --host 127.0.0.1 --metrics. The
+  # `llama-server-wrapper` token after the quoted command becomes $0 inside the
+  # `-lc` shell so the remaining flags map to "$@". No inline comments below.
+  llama-server-stub: |
+    /bin/zsh
+    -lc
+    'exec ~/.local/bin/ai-infra-llama-server-wrapper.sh "$@"'
+    llama-server-wrapper
+    --host 127.0.0.1
+    --metrics
+    --threads 8
+
+  # MLX backend stub: mlx_lm.server is spawned directly (no wrapper, no --metrics).
+  # It takes a model *directory* via --model and exposes only the OpenAI /v1 surface.
+  mlx-server-stub: |
+    /opt/homebrew/opt/mlx-lm/bin/mlx_lm.server
+    --host 127.0.0.1
+
+models:
+  # v1 DEFAULT chat alias (mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf).
+  # Weights path resolved at spawn time from AI_INFRA_DEFAULT_CHAT_MODEL_PATH.
+  "unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_DEFAULT_CHAT_MODEL_PATH}
+      --port ${PORT}
+
+  # Embedding model (no v1 default) — exercised ONLY by the opt-in embeddings
+  # smoke test when explicitly enabled. llama-server runs in --embedding mode.
+  # The weights path is supplied via its own env var; nothing here is absolute.
+  "gpustack/bge-m3":
+    cmd: |
+      ${llama-server-stub}
+      --embedding
+      --model ${env.AI_INFRA_BGE_M3_MODEL_PATH}
+      --port ${PORT}
+
+  # Small chat model (1B, Q8_0, single-file GGUF). Same wrapper as the default
+  # chat alias; the weights path is supplied via its own env var.
+  "lmstudio-community/llama-3.2-1b-instruct-q8-0-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_LLAMA32_1B_MODEL_PATH}
+      --port ${PORT}
+
+  # Small chat model (3B, Q8_0, single-file GGUF). Same wrapper as the default
+  # chat alias; the weights path is supplied via its own env var.
+  "ibm-granite/granite-4.1-3b-q8-0-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_GRANITE41_3B_MODEL_PATH}
+      --port ${PORT}
+
+  # Small chat model (4B, Q4_K_M, single-file GGUF). Same wrapper as the default
+  # chat alias; the weights path is supplied via its own env var.
+  "memoryco-ai/nemotron-3-nano-4b-q4-k-m-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_NEMOTRON3_NANO_4B_MODEL_PATH}
+      --port ${PORT}
+
+  # Small chat model (Gemma 4 E2B instruct, ~4.6B, Q8_0, single-file GGUF;
+  # text-only serving — the vision mmproj sidecar is not loaded). Same wrapper as
+  # the default chat alias; the weights path is supplied via its own env var.
+  "lmstudio-community/gemma-4-e2b-it-q8-0-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_GEMMA4_E2B_MODEL_PATH}
+      --port ${PORT}
+
+  # Small chat model (4B, Q4_K_S, single-file GGUF) — lighter-quant sibling of
+  # the default chat alias for fast swaps. Same wrapper as the default chat
+  # alias; the weights path is supplied via its own env var.
+  "unsloth/qwen3.5-4b-q4-k-s-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_QWEN35_4B_Q4KS_MODEL_PATH}
+      --port ${PORT}
+
+  # Illustrative GGUF mid-coding entry (optional; present only if the weights are
+  # installed). Uses the same stderr-tee wrapper as the default chat alias.
+  "qwen3/qwen3-coder-30b-a3b-q4-gguf":
+    cmd: |
+      ${llama-server-stub}
+      --model ${env.AI_INFRA_QWEN3_CODER_MODEL_PATH}
+      --ctx-size 32768
+      --port ${PORT}
+
+  # Illustrative MLX-native entry (optional). mlx_lm.server takes a model
+  # *directory*; the path is supplied via its own env var. No /metrics is exposed
+  # by MLX backends — only the llama-swap aggregate and macmon cover them.
+  "qwen3/qwen3-coder-30b-mlx-8bit":
+    cmd: |
+      ${mlx-server-stub}
+      --model ${env.AI_INFRA_QWEN3_CODER_MLX_MODEL_PATH}
+      --port ${PORT}

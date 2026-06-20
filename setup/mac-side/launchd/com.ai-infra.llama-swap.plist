@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.ai-infra.llama-swap.plist — launchd user agent for the llama-swap proxy.
+
+  Representative template. `__HOME__` is substituted with the user's real home
+  directory by scripts/host/up.sh at install time (the repo never commits a literal
+  home path). Install to ~/Library/LaunchAgents/ and load with
+  `launchctl bootstrap gui/$(id -u) <plist>`.
+
+  llama-swap binds 127.0.0.1:38080 only (config enforces the bind). The binary is
+  the Homebrew-installed llama-swap; the config and the staged wrapper live outside
+  any TCC-protected tree.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.ai-infra.llama-swap</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/llama-swap</string>
+      <string>--listen</string>
+      <string>127.0.0.1:38080</string>
+      <string>--config</string>
+      <string>__HOME__/.config/ai-infra/llama-swap.yaml</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+      <key>AI_INFRA_DEFAULT_CHAT_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/unsloth-qwen3.5-4b-mtp-ud-q8-k-xl.gguf</string>
+      <key>AI_INFRA_BGE_M3_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/bge-m3.gguf</string>
+      <key>AI_INFRA_LLAMA32_1B_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/llama-3.2-1b-instruct-q8-0.gguf</string>
+      <key>AI_INFRA_GRANITE41_3B_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/granite-4.1-3b-q8-0.gguf</string>
+      <key>AI_INFRA_NEMOTRON3_NANO_4B_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/nemotron-3-nano-4b-q4-k-m.gguf</string>
+      <key>AI_INFRA_GEMMA4_E2B_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/gemma-4-e2b-it-q8-0.gguf</string>
+      <key>AI_INFRA_QWEN35_4B_Q4KS_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/qwen3.5-4b-q4-k-s.gguf</string>
+      <key>AI_INFRA_QWEN3_CODER_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/qwen3-coder-30b-a3b-q4.gguf</string>
+      <key>AI_INFRA_QWEN3_CODER_MLX_MODEL_PATH</key>
+      <string>__HOME__/.cache/ai-infra/models/qwen3-coder-30b-mlx-8bit</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/llama-swap.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/llama-swap.log</string>
+  </dict>
+</plist>
