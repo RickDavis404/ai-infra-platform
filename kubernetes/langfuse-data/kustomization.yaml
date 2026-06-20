@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# langfuse-data — the externalized stateful backing stores for the application
+# plane. This top-level base aggregates the four store bases. No `namespace:` is
+# set here on purpose: the `cnpg` base spans two namespaces (langfuse-pg lives in
+# langfuse-data, litellm-pg in litellm), so each child base owns its own namespace.
+#
+# Ordering note: kustomize emits all four together, but the stores have a real
+# apply-time dependency on their operators (CNPG, Altinity ClickHouse) being Ready
+# first, and ClickHouse Keeper before the CHI. See README.md for the full order.
+resources:
+- cnpg
+- clickhouse
+- valkey
+- seaweedfs

@@ -1,0 +1,42 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# SeaweedFS S3 blob store for Langfuse, inlined via Helm and rendered with
+# `kustomize build --enable-helm`. Pin is exact (4.37); the chart cadence is very
+# fast (multiple bumps per week), so the pin must not float. See README.md.
+namespace: langfuse-data
+
+helmCharts:
+- name: seaweedfs
+  repo: https://seaweedfs.github.io/seaweedfs/helm
+  version: "4.37"
+  releaseName: langfuse-seaweedfs
+  namespace: langfuse-data
+  valuesFile: values.yaml
+
+# Namespace backfill for the post-install bucket-hook Job.
+# Most seaweedfs templates hardcode `namespace: {{ .Release.Namespace }}` (so they
+# correctly land in langfuse-data), but the shared/post-install-bucket-hook Job
+# template does NOT, and kustomize's `namespace:` transformer does not stamp
+# helm-inflated objects that lack an existing namespace field — so the Job rendered
+# namespace-less and `kubectl apply` defaulted it into `default`. Patch is targeted
+# at the single Job by name so the (legitimately cluster-scoped) rw-cr ClusterRole /
+# ClusterRoleBinding are left untouched.
+patches:
+- patch: |-
+    - op: add
+      path: /metadata/namespace
+      value: langfuse-data
+  target:
+    kind: Job
+    name: langfuse-seaweedfs-bucket-hook
+
+# The S3 credentials Secret (`langfuse-seaweedfs-s3-secret`, with the filer-mounted
+# `seaweedfs_s3_config` key) is materialized EXCLUSIVELY by the fnox+age pipeline
+# (`mise run secrets:sync`), which runs BEFORE this overlay in `k8s:apply`. We do
+# NOT ship a placeholder copy here: this overlay is applied AFTER secrets:sync, so a
+# placeholder `patches/s3-secret.yaml` would CLOBBER the real synced credentials with
+# `CHANGEME-*` values — SeaweedFS would then reject Loki/Tempo/Langfuse S3 auth with
+# "The access key ID you provided does not exist in our records" and those pods
+# CrashLoop. The chart itself does not render this Secret because values.yaml sets
+# `filer.s3.existingConfigSecret: langfuse-seaweedfs-s3-secret`.

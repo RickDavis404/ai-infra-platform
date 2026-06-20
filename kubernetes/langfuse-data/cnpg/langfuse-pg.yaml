@@ -1,0 +1,64 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: langfuse-pg
+  namespace: langfuse-data
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:233d7414ff5c1e4951e85389fb4bec31c18f35be1d7d47eea5aa296a46af0b5f
+  # Pinned tag: skip the re-pull on idempotent re-apply so repeated runs don't hit
+  # the registry's anonymous pull-rate limit (HTTP 429).
+  imagePullPolicy: IfNotPresent
+  primaryUpdateStrategy: unsupervised
+  # Expose the read-only (-ro, standbys) endpoint on a Cilium LoadBalancer VIP so the
+  # Mac reaches Postgres directly at 192.168.105.205:5432 — no port-forward (mirrors
+  # kubernetes/litellm/service.yaml). The default ClusterIP -rw/-ro/-r services remain.
+  managed:
+    services:
+      additional:
+        - selectorType: ro
+          serviceTemplate:
+            metadata:
+              name: langfuse-pg-ro-lb
+              annotations:
+                lbipam.cilium.io/ips: "192.168.105.205"
+            spec:
+              type: LoadBalancer
+              loadBalancerClass: io.cilium/l2-announcer
+              externalTrafficPolicy: Cluster
+  postgresql:
+    parameters:
+      timezone: UTC                 # Langfuse requires UTC
+    synchronous:
+      method: any
+      number: 1                     # quorum: 1 of 2 standbys must confirm (number < instances-1)
+  bootstrap:
+    initdb:
+      database: postgres_langfuse
+      owner: langfuse
+      secret: { name: langfuse-pg-app }   # provides username + password keys (fnox+age)
+  storage:
+    storageClass: local-path
+    size: 10Gi
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required   # spread the 3 instances across the 3 nodes
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { memory: 1Gi }
+  monitoring:
+    enablePodMonitor: true          # CNPG operator emits a PodMonitor (:9187 /metrics); Alloy discovers all PodMonitors cluster-wide
+  inheritedMetadata:
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9187"
+      prometheus.io/path: /metrics
+  # --- OPTIONAL: Barman PITR to SeaweedFS (off by default; enable for prod-like recovery) ---
+  # backup:
+  #   barmanObjectStore:
+  #     destinationPath: s3://langfuse-pg-backups/
+  #     endpointURL: http://langfuse-seaweedfs-s3.langfuse-data.svc.cluster.local:8333
+  #     s3Credentials:
+  #       accessKeyId:     { name: langfuse-app-secrets, key: s3-access-key-id }
+  #       secretAccessKey: { name: langfuse-app-secrets, key: s3-secret-access-key }

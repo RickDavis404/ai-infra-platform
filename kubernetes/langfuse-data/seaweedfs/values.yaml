@@ -1,0 +1,136 @@
+# values.yaml — seaweedfs/seaweedfs 4.34 (releaseName langfuse-seaweedfs, ns langfuse-data)
+#
+# SeaweedFS is the S3-compatible blob store for Langfuse event uploads, batch
+# exports, and media (spec §12.5). It is the most genuinely HA-ready store and the
+# biggest HA win from moving to three real nodes.
+#
+# Storage layout per pod (local-path): master 2Gi, filer 5Gi, volume 10Gi x3
+# (~15Gi usable under replication "001"; raise volume to 20Gi if media grows).
+
+global:
+  # No inter-pod mTLS: acceptable for the localhost-only lab inside the Cilium
+  # boundary. The S3 gateway still enforces its own access-key auth.
+  enableSecurity: false
+  seaweedfs:
+    # Emit per-component ServiceMonitors (master/volume/filer all expose
+    # metricsPort :9327). Gated on global.seaweedfs.monitoring.enabled; Alloy
+    # discovers all ServiceMonitors cluster-wide, so no extra labels are required.
+    monitoring:
+      enabled: true
+    enableReplication: true
+    # "001" = 1 replica on a DIFFERENT volume server -> 2 copies per chunk.
+    # SeaweedFS replication is server-aware; once volume pods are spread across
+    # nodes by the chart-default hostname anti-affinity, "different server"
+    # coincides with "different node", so a whole-node failure still leaves a copy.
+    replicationPlacement: "001"
+
+# --- Master ensemble: 3-node Raft quorum ----------------------------------------
+master:
+  enabled: true
+  replicas: 3 # odd Raft quorum; tolerates one loss (2 is invalid for Raft)
+  defaultReplication: "001"
+  data:
+    type: persistentVolumeClaim
+    storageClass: local-path
+    size: 2Gi
+  # Log dir as emptyDir, NOT the chart-default hostPath: the langfuse-data namespace
+  # enforces `baseline` PodSecurity, which forbids hostPath volumes — master pods are
+  # otherwise rejected at admission (FailedCreate). Logs still stream to stdout.
+  logs:
+    type: emptyDir
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  # Per-component Prometheus annotations (global.podAnnotations is ignored by the
+  # chart, so scrape annotations are set per component). Metrics on :9327.
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9327"
+
+# --- Volume servers: 3 pods, SPREAD across the three nodes -----------------------
+volume:
+  enabled: true
+  replicas: 3
+  dataDirs:
+    - name: data
+      type: persistentVolumeClaim
+      storageClass: local-path
+      size: 10Gi
+      maxVolumes: 0 # 0 => auto-configure the per-pod volume limit
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9327"
+  # NOTE: `volume.affinity` is intentionally NOT overridden. The chart default is
+  # already REQUIRED pod anti-affinity on kubernetes.io/hostname, which spreads the
+  # three volume pods across the three k3s nodes for true node-level redundancy.
+  # The upstream/authoritative single-node "null" affinity patch is deliberately
+  # DROPPED (not reintroduced) — this is the single biggest HA win of the 3-node move.
+
+# --- Filer: 2 replicas, embedded S3 gateway on :8333 -----------------------------
+filer:
+  enabled: true
+  replicas: 2 # S3 endpoint redundancy (metadata HA depends on the metadata backend)
+  defaultReplicaPlacement: "001"
+  data:
+    type: persistentVolumeClaim
+    storageClass: local-path
+    size: 5Gi
+  # Log dir as emptyDir, NOT chart-default hostPath, to satisfy `baseline` PodSecurity
+  # on langfuse-data (hostPath forbidden); otherwise the filer pods FailedCreate and
+  # the embedded S3 endpoint (:8333) never comes up.
+  logs:
+    type: emptyDir
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9327"
+  s3:
+    enabled: true # embedded S3 on the filer replaces the standalone gateway
+    port: 8333
+    enableAuth: true
+    # Deterministic S3 creds + identity JSON come from this Secret, materialized
+    # solely by the fnox+age pipeline (mise run secrets:sync) — see the seaweedfs
+    # kustomization note. The chart does NOT mint its own random secret because of
+    # existingConfigSecret below.
+    existingConfigSecret: langfuse-seaweedfs-s3-secret
+    # ALL S3 buckets the platform uses must be pre-created here, else the consumer
+    # crashes on first object op. Langfuse-* are the Langfuse blob buckets; tempo and
+    # loki store their traces/chunks/ruler/admin data here too (lgtm/tempo +
+    # lgtm/loki point at this filer's S3), so their buckets MUST exist or those pods
+    # CrashLoop with "The specified bucket does not exist".
+    createBuckets:
+      - name: langfuse-events
+      - name: langfuse-batch-exports
+      - name: langfuse-media
+      - name: tempo-traces
+      - name: loki-chunks
+      - name: loki-ruler
+      - name: loki-admin
+
+# --- Standalone gateways disabled (embedded filer S3 is used instead) ------------
+s3:
+  enabled: false
+sftp:
+  enabled: false
+admin:
+  enabled: false
+worker:
+  enabled: false
+allInOne:
+  enabled: false
+cosi:
+  enabled: false

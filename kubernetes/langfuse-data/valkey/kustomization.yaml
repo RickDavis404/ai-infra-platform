@@ -1,0 +1,33 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Valkey (Langfuse BullMQ job queue + ephemeral cache), inlined via Helm and
+# rendered with `kustomize build --enable-helm`. Pin is exact (0.10.0) and does
+# not float. This is the valkey-io project chart — the non-Bitnami replacement
+# for the old subchart — declaring no dependencies. See README.md for rationale.
+namespace: langfuse-data
+
+helmCharts:
+- name: valkey
+  repo: https://valkey.io/valkey-helm
+  version: 0.10.0
+  releaseName: langfuse-valkey
+  namespace: langfuse-data
+  valuesFile: values.yaml
+
+# Namespace backfill for helm-inflated objects.
+# The valkey-io chart templates do NOT emit `metadata.namespace` (unlike the
+# seaweedfs chart, whose templates hardcode `namespace: {{ .Release.Namespace }}`),
+# and kustomize's `namespace:` transformer does NOT stamp helm-inflated resources
+# that lack an existing namespace field — so EVERY valkey object rendered
+# namespace-less and `kubectl apply` defaulted it into `default` (where the
+# `langfuse-shared-passwords` secret does not exist, wedging the StatefulSet on a
+# FailedMount). None of this chart's objects are cluster-scoped, so a catch-all
+# add patch is safe and puts the whole release in langfuse-data.
+patches:
+- patch: |-
+    - op: add
+      path: /metadata/namespace
+      value: langfuse-data
+  target:
+    annotationSelector: ""

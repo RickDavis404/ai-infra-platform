@@ -1,0 +1,73 @@
+# ClickHouseKeeperInstallation (CHK) — Raft coordination ensemble for the
+# `langfuse-ch` CHI. replicasCount 3 gives an odd Raft quorum that tolerates the
+# loss of one Keeper (2/3 retains quorum). Durability/coordination is delegated
+# here, which is why the CHI runs only two data replicas. The operator exposes
+# the ensemble at `keeper-langfuse-keeper.langfuse-data.svc.cluster.local:2181`,
+# which the CHI references via `spec.configuration.zookeeper`.
+apiVersion: clickhouse-keeper.altinity.com/v1
+kind: ClickHouseKeeperInstallation
+metadata:
+  name: langfuse-keeper
+  namespace: langfuse-data
+spec:
+  configuration:
+    clusters:
+      - name: keeper
+        layout:
+          replicasCount: 3
+    # ClickHouse Keeper's native <prometheus> endpoint (Keeper 23.x+) on :7000
+    # /metrics. The CHK operator translates `prometheus/<key>` settings into the
+    # corresponding <prometheus><key> XML in keeper_config.d/ — the same mechanism
+    # the CHI uses for the clickhouse-server :9363 endpoint. Port 7000 is free on
+    # the Keeper pods (which already bind 2181/9181/9182/9234/9444). The
+    # prometheus-server `clickhouse-keeper` scrape job (kubernetes/lgtm/prometheus)
+    # targets this port.
+    settings:
+      prometheus/endpoint: /metrics
+      prometheus/port: "7000"
+      prometheus/metrics: "true"
+      prometheus/events: "true"
+      prometheus/asynchronous_metrics: "true"
+      prometheus/status_info: "false"
+  defaults:
+    templates:
+      podTemplate: keeper-pod
+      volumeClaimTemplate: keeper-data
+  templates:
+    podTemplates:
+      - name: keeper-pod
+        spec:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      clickhouse-keeper.altinity.com/chk: langfuse-keeper
+                  topologyKey: kubernetes.io/hostname
+          containers:
+              # The CHK operator does NOT default a Keeper image (unlike the CHI),
+              # so it MUST be set explicitly or the StatefulSet pod is invalid
+              # ("spec.containers[0].image: Required value"). Pinned to match the
+              # CHI's clickhouse-server 26.3.17.4 (clickhouse-keeper ships from the
+              # same release line / registry).
+            - name: clickhouse-keeper
+              image: clickhouse/clickhouse-keeper:26.3.17.4@sha256:fdac42579b7279a51a42c5546e7f01d38a756de742de572688fcc595c85602e6
+              # Pinned tag on a Docker Hub image: IfNotPresent so idempotent
+              # re-applies don't re-pull and trip docker.io's anonymous pull-rate
+              # limit (HTTP 429).
+              imagePullPolicy: IfNotPresent
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  memory: 512Mi
+    volumeClaimTemplates:
+      - name: keeper-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: local-path
+          resources:
+            requests:
+              storage: 2Gi
