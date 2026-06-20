@@ -1,0 +1,149 @@
+# ClickHouseInstallation (CHI) — Langfuse analytics/event store.
+#
+# Topology: shardsCount 1 / replicasCount 2 → ReplicatedMergeTree across two
+# ClickHouse replicas. Quorum/coordination is delegated to the 3-node
+# ClickHouseKeeperInstallation (see keeper.yaml), so two data copies suffice; a
+# third would only waste storage. Langfuse migrations create Replicated engines
+# when a cluster macro is present (clusterEnabled in the Langfuse values).
+#
+# Auth/network: the `default` user password is sourced from the
+# `langfuse-shared-passwords` Secret (key `clickhouse-password`, fnox+age). The
+# `default` user's networks/ip wildcard `::/0` is required because langfuse-web /
+# worker run in a different namespace and would otherwise be rejected by
+# ClickHouse IP pinning; it is acceptable ONLY behind the Cilium NetworkPolicy
+# that scopes access to this store, which the platform keeps. The
+# `clickhouse_operator` user is restricted to the k3s default cluster CIDR plus
+# loopback.
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: langfuse-ch
+  namespace: langfuse-data
+spec:
+  configuration:
+    clusters:
+      # MUST be named `default`: Langfuse hard-codes `ON CLUSTER default` for its
+      # ClickHouse schema migrations whenever CLICKHOUSE_CLUSTER_ENABLED=true (the
+      # app does NOT reliably honour CLICKHOUSE_CLUSTER_NAME — see langfuse docs +
+      # discussion #7933 / issue #7743). ClickHouse ships a built-in `default`
+      # cluster that points only at `localhost`; if our operator-managed cluster has
+      # any OTHER name, `ON CLUSTER default` resolves to that single-node localhost
+      # entry and creates `schema_migrations` on only ONE replica — the migration's
+      # follow-up `SELECT ... FROM schema_migrations` then lands on the other replica
+      # and fails with `code: 60 Unknown table 'schema_migrations'`. Naming our
+      # cluster `default` makes the operator emit a `default` remote_servers entry
+      # spanning BOTH replicas, so `ON CLUSTER default` (and the Replicated* DDL)
+      # apply uniformly. DNS becomes chi-langfuse-ch-default-0-{0,1}.
+      - name: default
+        layout:
+          shardsCount: 1
+          replicasCount: 2
+    zookeeper:
+      nodes:
+        - host: keeper-langfuse-keeper.langfuse-data.svc.cluster.local
+          port: 2181
+    users:
+      default/password:
+        valueFrom:
+          secretKeyRef:
+            name: langfuse-shared-passwords
+            key: clickhouse-password
+      default/networks/ip:
+        - "::/0"
+      clickhouse_operator/networks/ip:
+        - "10.42.0.0/16"
+        - "::1"
+        - "127.0.0.1"
+    profiles:
+      # Rollback-safety pin for the 25.8 -> 26.3 LTS roll: freeze the default
+      # profile's `compatibility` setting at 25.8 semantics so 26.3 binaries do
+      # not start writing formats/defaults that a 25.8 binary cannot read if we
+      # have to roll back. Remove only after 26.3 has soaked and rollback is no
+      # longer a consideration.
+      default/compatibility: "25.8"
+    settings:
+      prometheus/endpoint: /metrics
+      prometheus/port: 9363
+    files:
+      config.d/prometheus.xml: |
+        <clickhouse><prometheus>
+          <endpoint>/metrics</endpoint><port>9363</port>
+          <metrics>true</metrics><events>true</events><asynchronous_metrics>true</asynchronous_metrics>
+        </prometheus></clickhouse>
+      config.d/system-logs.xml: |
+        <clickhouse>
+            <metric_log remove="1"/>
+            <asynchronous_metric_log remove="1"/>
+            <trace_log remove="1"/>
+            <text_log remove="1"/>
+            <opentelemetry_span_log remove="1"/>
+            <latency_log remove="1"/>
+        </clickhouse>
+  defaults:
+    templates:
+      podTemplate: langfuse-ch-pod
+      dataVolumeClaimTemplate: langfuse-ch-data
+      # CHI-wide Service (clickhouse-langfuse-ch) on a Cilium LB VIP so the Mac reaches
+      # ClickHouse HTTP directly at 192.168.105.207:8123 — no port-forward. Langfuse
+      # itself uses the per-replica chi-* services, so this LB only serves external clients.
+      serviceTemplate: langfuse-ch-lb
+  templates:
+    serviceTemplates:
+      - name: langfuse-ch-lb
+        metadata:
+          annotations:
+            lbipam.cilium.io/ips: "192.168.105.207"
+        spec:
+          type: LoadBalancer
+          loadBalancerClass: io.cilium/l2-announcer
+          externalTrafficPolicy: Cluster
+          ports:
+            - name: http
+              port: 8123
+              targetPort: 8123
+            - name: tcp
+              port: 9000
+              targetPort: 9000
+    podTemplates:
+      - name: langfuse-ch-pod
+        metadata:
+          annotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "9363"
+            prometheus.io/path: /metrics
+        spec:
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      clickhouse.altinity.com/chi: langfuse-ch
+                  topologyKey: kubernetes.io/hostname
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:26.3.17.4@sha256:85c434814ac8905e5648027ce926f74ab067edd6aadbccb6c0c165cd3571ea49
+              # Pinned tag on a Docker Hub image: IfNotPresent so idempotent
+              # re-applies don't re-pull and trip docker.io's anonymous pull-rate
+              # limit (HTTP 429).
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: TZ
+                  value: UTC
+              ports:
+                - name: prometheus
+                  containerPort: 9363
+              resources:
+                requests:
+                  cpu: 500m
+                  memory: 2Gi
+                limits:
+                  memory: 8Gi
+    volumeClaimTemplates:
+      - name: langfuse-ch-data
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: local-path
+          resources:
+            requests:
+              storage: 20Gi

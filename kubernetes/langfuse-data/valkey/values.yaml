@@ -1,0 +1,89 @@
+# values.yaml — valkey-io/valkey 0.10.0 (releaseName langfuse-valkey, ns langfuse-data)
+#
+# Valkey is Langfuse's BullMQ job queue + ephemeral cache, NOT an authoritative
+# store. BullMQ re-enqueues in-flight jobs on reconnect, so a Valkey restart costs
+# at most some job re-processing, not data loss (spec §12.4).
+#
+# Knob names below are the valkey-io chart's own schema (confirmed against the
+# pinned 0.10.0), which differs from the legacy Bitnami subchart:
+#   - auth via `auth.aclUsers` + `auth.usersExistingSecret` (per-user `passwordKey`)
+#   - master persistence: `dataStorage`; replica persistence: `replica.persistence`
+#   - PDB: `podDisruptionBudget`; spreading: raw `affinity`
+# See README.md for the mapping from the spec §12.4 excerpt to these knobs.
+
+# --- Replication: 1 primary + 2 replicas (3 pods) -------------------------------
+replica:
+  enabled: true
+  replicas: 2 # 1 primary + 2 replicas (3 pods); survives one pod loss after failover
+  replicationUser: default # replicas authenticate as the 'default' ACL user
+  minReplicasToWrite: 1 # soft write-quorum: block writes if fewer healthy replicas
+  # Replicated mode requires a small per-replica PVC. We use the spec's documented
+  # OPTIONAL ~1Gi local-path PVC (warm failover without full BullMQ re-enqueue).
+  # The master itself stays non-persistent (see dataStorage below).
+  persistence:
+    size: 1Gi
+    storageClass: local-path
+    accessModes:
+      - ReadWriteOnce
+
+# --- Auth: deterministic password from the shared secret ------------------------
+# The chart reads each ACL user's password from `usersExistingSecret` at the key
+# `passwordKey` (defaults to the username). We pin it to `redis-password` so it
+# matches Langfuse's `redis.auth.existingSecretPasswordKey` (spec §12.1).
+auth:
+  enabled: true
+  usersExistingSecret: langfuse-shared-passwords
+  aclUsers:
+    default:
+      # Full permissions for the BullMQ workload; password comes from the secret.
+      permissions: "~* &* +@all"
+      passwordKey: redis-password
+
+# --- Master persistence: OFF (BullMQ re-enqueue guarantee) -----------------------
+dataStorage:
+  enabled: false # primary is non-persistent; RTO is pod restart time
+
+# --- Valkey config: eviction policy + memory cap --------------------------------
+# `valkeyConfig` is raw valkey.conf content (mounted via ConfigMap). noeviction
+# makes the server block on memory pressure instead of silently dropping queue
+# jobs; maxmemory caps usage below the 320Mi pod limit (headroom above the cap).
+valkeyConfig: |
+  maxmemory-policy noeviction
+  maxmemory 256mb
+
+# --- Service: in-cluster ClusterIP on 6379 --------------------------------------
+service:
+  type: ClusterIP
+  port: 6379
+
+# --- Resources (spec §6.2 HA table) ---------------------------------------------
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 320Mi # headroom above the 256mb maxmemory cap
+
+# --- Spreading: required pod anti-affinity across the three nodes ----------------
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: valkey
+            app.kubernetes.io/instance: langfuse-valkey
+        topologyKey: kubernetes.io/hostname
+
+# --- PodDisruptionBudget (spec §6.2: Valkey minAvailable 2) ----------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2 # keep a write-quorum (primary + 1 replica) during voluntary disruptions
+
+# --- Prometheus metrics exporter sidecar ----------------------------------------
+# The redis_exporter sidecar exposes metrics on :9121; the chart's ServiceMonitor
+# (metrics.serviceMonitor.enabled) targets that port. Alloy discovers all
+# ServiceMonitors cluster-wide, so no extra selector labels are needed here.
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true

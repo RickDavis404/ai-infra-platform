@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# CNPG Cluster CRs for the two transactional stores. The CloudNativePG operator
+# (kubernetes/operators/cnpg) must be Ready before these apply. Each Cluster lives
+# in its own namespace (langfuse-pg → langfuse-data, litellm-pg → litellm).
+resources:
+  - langfuse-pg.yaml
+  - litellm-pg.yaml
