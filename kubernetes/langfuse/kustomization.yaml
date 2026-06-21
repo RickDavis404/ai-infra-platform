@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Langfuse web + worker (v3 split architecture), inlined via Helm and rendered
+# with `kustomize build --enable-helm`. The official langfuse-k8s chart is pinned
+# exactly at 1.5.37 (appVersion 3.201.x line); it does not float. All four bundled
+# data subcharts (postgresql / clickhouse / redis / s3) are disabled in values.yaml
+# and Langfuse is pointed at the externalized stores in the langfuse-data namespace.
+# Re-verify the values schema against the pinned chart before any version bump.
+# See README.md for provenance, the headless-bootstrap contract, and the
+# SALT / ENCRYPTION_KEY write-once warning.
+namespace: langfuse
+
+helmCharts:
+  - name: langfuse
+    repo: https://langfuse.github.io/langfuse-k8s
+    version: 1.5.37
+    releaseName: langfuse
+    namespace: langfuse
+    valuesFile: values.yaml
+    includeCRDs: true
+
+patches:
+  - path: patches/ha.yaml
+    target:
+      kind: PodDisruptionBudget
+      labelSelector: app.kubernetes.io/instance=langfuse
+  # Add loadBalancerClass + externalTrafficPolicy to the chart's langfuse-web
+  # Service (it sets type=LoadBalancer + the lbipam VIP annotation from values, but
+  # the chart template cannot emit these two fields). Host access = the fixed VIP
+  # 192.168.105.201:3000 over the shared L2 (D005 / ha-networking.md §4).
+  - path: patches/lb-service.yaml
+    target:
+      kind: Service
+      name: langfuse-web

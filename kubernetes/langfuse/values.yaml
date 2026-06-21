@@ -1,0 +1,261 @@
+# values.yaml — chart langfuse/langfuse 1.5.37 (pinned in kustomization.yaml)
+#
+# Langfuse v3 split architecture: langfuse-web (Next.js UI + API/ingestion) and
+# langfuse-worker (async queue consumer -> ClickHouse + S3). All four bundled data
+# subcharts are disabled here (deploy: false) and Langfuse is pointed at the
+# externalized HA stores in the langfuse-data namespace (CNPG Postgres, Altinity
+# ClickHouse + Keeper, Valkey, SeaweedFS). Every credential resolves from the single
+# Secret `langfuse-app-secrets` (generated from fnox+age via secretGenerator,
+# disableNameSuffixHash: true). No real secret values appear in this repo.
+#
+# HA: web/worker each run 2 replicas with a PDB minAvailable: 1 (see §6.2 / §12.1).
+# Anti-affinity (required, hostname) and the PDBs are reconciled by patches/ha.yaml.
+#
+# Resources follow §12.1: requests 200m / 512Mi, limits 1500m / 2Gi (per replica).
+
+langfuse:
+  replicas: 2 # top-level default; web/worker override below
+  # The chart DEFAULTS langfuse.image.pullPolicy to `Always`, so every idempotent
+  # re-apply re-pulls langfuse/langfuse + langfuse/langfuse-worker (both Docker Hub
+  # images) and trips docker.io's anonymous pull-rate limit (HTTP 429). The image is
+  # pinned to an exact tag (appVersion 3.201.x), so IfNotPresent is safe — the web
+  # and worker templates both fall back to this via
+  # `langfuse.web/worker.image.pullPolicy | default langfuse.image.pullPolicy`.
+  image:
+    pullPolicy: IfNotPresent
+    # Runs ahead of chart appVersion 3.201.1 (user-approved 2026-07-02); REMOVE when chart 1.5.38+ bundles >=3.203.x.
+    tag: "3.203.3"
+  logging:
+    level: info
+    # format sets LANGFUSE_LOG_FORMAT via the chart serverEnv helper. Set it HERE,
+    # not in additionalEnv (a duplicate additionalEnv LANGFUSE_LOG_FORMAT is
+    # silently ignored by the chart).
+    format: json
+
+  # Feature flags. signUpDisabled=true makes the chart emit AUTH_DISABLE_SIGNUP=true via
+  # its serverEnv helper — set it HERE, NOT in additionalEnv (a second AUTH_DISABLE_SIGNUP
+  # in additionalEnv duplicates the env key and fails kubectl apply --server-side).
+  features:
+    signUpDisabled: true
+
+  web:
+    replicas: 2
+    # type=LoadBalancer with a Cilium-pinned VIP from the lima-shared-pool. The Mac
+    # is on the same 192.168.105.0/24 L2, so the Langfuse web UI + OTLP ingest are
+    # reachable DIRECTLY at http://192.168.105.201:3000 — no port-forward (D005 /
+    # ha-networking.md §4). The chart's web service template only renders
+    # `type` + `annotations`; loadBalancerClass + externalTrafficPolicy are added
+    # by patches/lb-service.yaml (the chart can't emit them). `port-forward:langfuse` stays a
+    # non-HA loopback fallback.
+    service:
+      type: LoadBalancer
+      port: 3000
+      annotations:
+        # Cilium LB-IPAM fixed VIP. Correct key is `lbipam.cilium.io/ips`.
+        lbipam.cilium.io/ips: 192.168.105.201
+    pdb:
+      create: true
+      minAvailable: 1
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1500m
+        memory: 2Gi
+    # Required anti-affinity (hostname): the 2 web replicas land on distinct nodes
+    # so a single node loss never drops the whole web tier (HA matrix §6.2). The
+    # chart exposes per-deployment affinity under web.pod.affinity.
+    pod:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: langfuse
+                  app.kubernetes.io/instance: langfuse
+                  app.kubernetes.io/component: web
+
+  worker:
+    replicas: 2
+    pdb:
+      create: true
+      minAvailable: 1
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1500m
+        memory: 2Gi
+    # Required anti-affinity (hostname): the 2 worker replicas land on distinct
+    # nodes so a single node loss never drops the whole worker tier (HA matrix §6.2).
+    # The chart exposes per-deployment affinity under worker.pod.affinity.
+    pod:
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: langfuse
+                  app.kubernetes.io/instance: langfuse
+                  app.kubernetes.io/component: worker
+
+  # --- security secrets (immutable after first boot; see README warning) ---
+  # SALT and ENCRYPTION_KEY must NEVER change on a live database. Rotating SALT
+  # invalidates every hashed API key; rotating ENCRYPTION_KEY makes encrypted
+  # columns undecryptable. ENCRYPTION_KEY must be exactly 64 hex chars (256-bit).
+  salt:
+    secretKeyRef:
+      name: langfuse-app-secrets
+      key: salt
+  encryptionKey:
+    secretKeyRef:
+      name: langfuse-app-secrets
+      key: encryption-key
+  nextauth:
+    # MUST equal the browser-reachable URL. With the Cilium LB VIP the browser hits
+    # the web UI DIRECTLY at http://192.168.105.201:3000 (same L2 as the Mac), so
+    # that is the canonical next-auth URL. The `port-forward:langfuse` port-forward
+    # (http://127.0.0.1:33000) is a non-HA fallback; when reaching Langfuse that way
+    # instead, this must be flipped back to http://127.0.0.1:33000 to match the host.
+    url: http://192.168.105.201:3000
+    secret:
+      secretKeyRef:
+        name: langfuse-app-secrets
+        key: nextauth-secret
+
+  # --- headless bootstrap (§12.1.1): applied to both web and worker ---
+  # On first boot, if the named org/project/user/API-keys do not already exist,
+  # they are created from these LANGFUSE_INIT_* env. Idempotent on restart: they
+  # only CREATE absent resources and never update existing ones. The pre-seeded
+  # project public/secret keys are sourced from the Secret so downstream config
+  # (LiteLLM Langfuse callback, agent telemetry env) can reference them without a
+  # manual UI copy step. AUTH_DISABLE_SIGNUP=true enforces login-required and
+  # blocks self-registration after the admin is bootstrapped. AUTH_TRUST_HOST=true
+  # lets next-auth accept the port-forward host 127.0.0.1:33000.
+  additionalEnv:
+    - name: LANGFUSE_INIT_ORG_ID
+      value: "ai-infra-platform"
+    - name: LANGFUSE_INIT_ORG_NAME
+      value: "ai-infra-platform"
+    - name: LANGFUSE_INIT_PROJECT_ID
+      value: "ai-infra-platform"
+    - name: LANGFUSE_INIT_PROJECT_NAME
+      value: "ai-infra-platform"
+    - name: LANGFUSE_INIT_PROJECT_PUBLIC_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-app-secrets
+          key: init-project-public-key
+    - name: LANGFUSE_INIT_PROJECT_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-app-secrets
+          key: init-project-secret-key
+    - name: LANGFUSE_INIT_USER_EMAIL
+      value: "admin@ai-infra-platform.example"
+    - name: LANGFUSE_INIT_USER_NAME
+      value: "admin"
+    - name: LANGFUSE_INIT_USER_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: langfuse-app-secrets
+          key: init-user-password
+    # LANGFUSE_INIT_PROJECT_RETENTION intentionally unset -> retain-forever (lab default).
+    # AUTH_DISABLE_SIGNUP is set via langfuse.features.signUpDisabled above — NOT here,
+    # since a duplicate env key breaks `kubectl apply --server-side`.
+    - name: AUTH_TRUST_HOST
+      value: "true"
+    # ClickHouse lightweight-delete/update enablement: Langfuse's ClickHouse
+    # maintenance (retention/GDPR deletes, projection updates) uses lightweight
+    # DELETE/UPDATE mutations instead of heavy ALTER ... rewrites.
+    - name: CLICKHOUSE_LIGHTWEIGHT_DELETE_MODE
+      value: "lightweight_update"
+    - name: CLICKHOUSE_USE_LIGHTWEIGHT_UPDATE
+      value: "true"
+
+# No chart-native Ingress. Access is kubectl port-forward svc/langfuse-web 3000:3000.
+ingress:
+  enabled: false
+
+global:
+  # Relaxes the bundled common-chart image-verification guard inherited from the
+  # data subcharts. Verify whether still required once all data subcharts are
+  # deploy: false at the pinned chart version; drop if unneeded.
+  security:
+    allowInsecureImages: true
+
+# --- externalized stores: all bundled subcharts disabled ---
+
+postgresql:
+  # Migration to the CNPG-minted DATABASE_URL `uri` secretKeyRef is the v7 path
+  # (see §11); directUrl / shadowDatabaseUrl are available fallbacks if the CNPG
+  # role lacks CREATE DATABASE.
+  deploy: false
+  host: langfuse-pg-rw.langfuse-data.svc.cluster.local # CNPG -rw = current primary (HA-aware)
+  port: 5432
+  auth:
+    username: langfuse
+    database: postgres_langfuse
+    existingSecret: langfuse-app-secrets
+    secretKeys:
+      userPasswordKey: postgres-password
+      # no separate admin user; the user password key is reused for adminPasswordKey
+      adminPasswordKey: postgres-password
+
+clickhouse:
+  deploy: false
+  # CHI cluster is named `default` because Langfuse hard-codes ON CLUSTER default.
+  # Pod DNS form: chi-<chi>-<cluster>-<shard>-<replica>.
+  host: chi-langfuse-ch-default-0-0.langfuse-data.svc.cluster.local
+  httpPort: 8123
+  nativePort: 9000
+  database: default
+  clusterEnabled: true # HA: ReplicatedMergeTree across CH replicas (see §12.3)
+  auth:
+    username: default
+    existingSecret: langfuse-app-secrets
+    existingSecretKey: clickhouse-password
+  migration:
+    autoMigrate: true # worker runs CH migrations on boot (first-apply bottleneck)
+
+redis:
+  deploy: false
+  # The valkey-io/valkey chart (releaseName langfuse-valkey, replica.enabled=true)
+  # exposes the writable PRIMARY at the Service `langfuse-valkey` (it targets pod-0,
+  # ROLE=master) and read replicas at `langfuse-valkey-read`. It does NOT create a
+  # `<release>-primary` Service (that is Bitnami-chart naming). Pointing here at
+  # `langfuse-valkey-primary` yields ENOTFOUND at runtime, breaking the BullMQ queue.
+  host: langfuse-valkey.langfuse-data.svc.cluster.local
+  port: 6379
+  auth:
+    username: default
+    existingSecret: langfuse-app-secrets
+    existingSecretPasswordKey: redis-password
+    database: 0
+
+s3:
+  deploy: false
+  storageProvider: s3
+  endpoint: http://langfuse-seaweedfs-s3.langfuse-data.svc.cluster.local:8333 # filer :8333, NOT master :9333
+  region: us-east-1 # cosmetic; SeaweedFS ignores region
+  forcePathStyle: true # REQUIRED for SeaweedFS/MinIO path-style addressing
+  bucket: langfuse-events
+  accessKeyId:
+    secretKeyRef:
+      name: langfuse-app-secrets
+      key: s3-access-key-id
+  secretAccessKey:
+    secretKeyRef:
+      name: langfuse-app-secrets
+      key: s3-secret-access-key
+  eventUpload:
+    bucket: langfuse-events
+  batchExport:
+    enabled: true
+    bucket: langfuse-batch-exports
+  mediaUpload:
+    bucket: langfuse-media

@@ -1,0 +1,23 @@
+# LoadBalancer hardening patch (strategic merge) for the langfuse-web Service.
+#
+# The pinned chart (1.5.37) web service template renders only `type` and
+# `annotations` from values (templates/web/service.yaml) — it has no field for
+# loadBalancerClass or externalTrafficPolicy. values.yaml already sets
+# langfuse.web.service.type: LoadBalancer + the lbipam.cilium.io/ips annotation;
+# this patch adds the two fields the chart cannot emit so the rendered Service
+# carries the full Cilium L2-announcer contract (D005 / ha-networking.md §4):
+#
+#   - loadBalancerClass: io.cilium/l2-announcer  -> Cilium owns this LB (not another
+#     controller).
+#   - externalTrafficPolicy: Cluster             -> required for L2-announced
+#     services; Local can drop traffic on pod-less nodes (ha-networking.md §10).
+#
+# Targeted in kustomization.yaml by kind: Service + name: langfuse-web.
+apiVersion: v1
+kind: Service
+metadata:
+  name: langfuse-web
+  namespace: langfuse
+spec:
+  loadBalancerClass: io.cilium/l2-announcer
+  externalTrafficPolicy: Cluster
