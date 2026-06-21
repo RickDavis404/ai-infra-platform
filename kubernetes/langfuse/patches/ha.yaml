@@ -1,0 +1,17 @@
+# HA reconciliation patch (JSON 6902) for the Langfuse web + worker PDBs.
+#
+# The chart already emits a PodDisruptionBudget per component (pdb.create: true,
+# minAvailable: 1 in values.yaml). This patch is the belt-and-suspenders guarantee
+# that minAvailable lands at exactly 1 regardless of how the pinned chart renders
+# the field — so a node drain or rolling update never takes the last replica down.
+#
+# Targeted in kustomization.yaml by kind: PodDisruptionBudget +
+# labelSelector app.kubernetes.io/instance=langfuse (matches both the
+# langfuse-web-pdb and langfuse-worker-pdb objects).
+#
+# Pod anti-affinity (required, kubernetes.io/hostname) for web and worker is set
+# directly in values.yaml under langfuse.web.affinity / langfuse.worker.affinity,
+# so each component's 2 replicas land on distinct nodes (HA matrix §6.2).
+- op: replace
+  path: /spec/minAvailable
+  value: 1
