@@ -1,0 +1,262 @@
+# Shared key-mint script for all three per-client key Jobs. Kept in one ConfigMap so
+# the idempotency logic lives in exactly one place; each Job parameterizes it purely
+# through env (KEY_ALIAS / TEAM_NAME / KEY_SECRET_NAME / KEY_MODELS / budgets). Pure
+# stdlib Python (urllib) — no pip install at runtime.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-keymint-script
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+data:
+  mint_key.py: |
+    """Mint (or refresh) one LiteLLM virtual key and persist it to a k8s Secret.
+
+    Idempotency contract (§11.4.4): GET-then-PATCH-or-POST against the gateway's key
+    table, then create-or-patch the Secret. We deliberately DO NOT skip-if-exists: on
+    a CNPG re-bootstrap the LiteLLM_VerificationToken table is empty while a stale
+    Secret may linger, which would 401 consumers. Re-running this Job regenerates a
+    fresh plaintext and overwrites the Secret.
+    """
+
+    import base64
+    import json
+    import os
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    BASE = os.environ["LITELLM_BASE_URL"].rstrip("/")
+    MASTER = os.environ["LITELLM_MASTER_KEY"]
+    NS = os.environ["NAMESPACE"]
+    TEAM_SECRET = os.environ["TEAM_SECRET_NAME"]
+    KEY_ALIAS = os.environ["KEY_ALIAS"]
+    TEAM_NAME = os.environ["TEAM_NAME"]
+    KEY_SECRET = os.environ["KEY_SECRET_NAME"]
+    MODELS = json.loads(os.environ.get("KEY_MODELS", "[]"))
+    MAX_BUDGET = float(os.environ["KEY_MAX_BUDGET"])
+    RPM_LIMIT = int(os.environ["KEY_RPM_LIMIT"])
+    TPM_LIMIT = int(os.environ["KEY_TPM_LIMIT"])
+    # Optional rolling budget window (e.g. "1h", "30d"). When set, LiteLLM resets the
+    # key's spend every window, so max_budget becomes a per-window cap ($X per window).
+    BUDGET_DURATION = os.environ.get("KEY_BUDGET_DURATION", "").strip()
+    # Optional FIXED key value (e.g. CODEX_LITELLM_VIRTUAL_KEY from fnox+age). When
+    # set, /key/generate is asked to mint THIS exact token so the DB key matches the
+    # value the host-side client already holds — no out-of-band "mirror to fnox" step.
+    # When empty, the gateway generates a random sk-* token (legacy behaviour).
+    KEY_VALUE = os.environ.get("KEY_VALUE", "").strip()
+
+    HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+    PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+    KUBE_API = f"https://{HOST}:{PORT}"
+    SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+    with open(f"{SA}/token", encoding="utf-8") as fh:
+        KUBE_TOKEN = fh.read().strip()
+    KUBE_CTX = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+
+
+    def litellm_request(path, payload=None, method="POST"):
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = urllib.request.Request(
+            f"{BASE}{path}", data=data, method=method,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {MASTER}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+    def kube_request(path, payload=None, method="GET", content_type="application/json"):
+        data = json.dumps(payload).encode("utf-8") if payload is not None else None
+        req = urllib.request.Request(
+            f"{KUBE_API}{path}", data=data, method=method,
+            headers={
+                "Authorization": f"Bearer {KUBE_TOKEN}",
+                "Content-Type": content_type,
+            },
+        )
+        with urllib.request.urlopen(req, context=KUBE_CTX, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+
+    def read_team_id():
+        sec = kube_request(
+            f"/api/v1/namespaces/{NS}/secrets/{TEAM_SECRET}", method="GET"
+        )
+        raw = sec.get("data", {}).get(TEAM_NAME)
+        if not raw:
+            raise SystemExit(f"team '{TEAM_NAME}' not found in {TEAM_SECRET}")
+        return base64.b64decode(raw).decode("utf-8")
+
+
+    def find_existing_key(team_id):
+        """Return the existing virtual key token for KEY_ALIAS, or None.
+
+        /key/generate does not return the plaintext of a pre-existing key, so when a
+        matching alias is already present we PATCH its budgets/limits and KEEP the
+        plaintext we already hold in the Secret (if any). If no plaintext is stored
+        yet we regenerate. Returns (info_present: bool).
+        """
+        try:
+            info = litellm_request(
+                f"/key/info?key_alias={KEY_ALIAS}", method="GET"
+            )
+        except urllib.error.HTTPError as exc:
+            if exc.code in (400, 404):
+                return None
+            raise
+        return info if info else None
+
+
+    def patch_existing_key(team_id):
+        body = {
+            "key_alias": KEY_ALIAS,
+            "team_id": team_id,
+            "models": MODELS,
+            "max_budget": MAX_BUDGET,
+            "rpm_limit": RPM_LIMIT,
+            "tpm_limit": TPM_LIMIT,
+        }
+        if BUDGET_DURATION:
+            body["budget_duration"] = BUDGET_DURATION
+        try:
+            litellm_request("/key/update", body, method="POST")
+            print(f"patched existing key alias '{KEY_ALIAS}'")
+        except urllib.error.HTTPError as exc:
+            print(
+                f"warning: /key/update for '{KEY_ALIAS}' returned "
+                f"{exc.code}; continuing"
+            )
+
+
+    def generate_key(team_id):
+        body = {
+            "key_alias": KEY_ALIAS,
+            "team_id": team_id,
+            "models": MODELS,
+            "max_budget": MAX_BUDGET,
+            "rpm_limit": RPM_LIMIT,
+            "tpm_limit": TPM_LIMIT,
+            "metadata": {"ai.client.name": KEY_ALIAS, "team": TEAM_NAME},
+        }
+        if BUDGET_DURATION:
+            body["budget_duration"] = BUDGET_DURATION
+        if KEY_VALUE:
+            # Mint this EXACT token (GenerateKeyRequest.key is honoured), so the DB
+            # row equals the value the host-side client already holds from fnox.
+            body["key"] = KEY_VALUE
+        try:
+            res = litellm_request("/key/generate", body, method="POST")
+        except urllib.error.HTTPError as exc:
+            # A fixed-value re-run can 400/409 if the token already exists in the DB
+            # (e.g. the alias was deleted but the token row lingers, or a prior run
+            # minted it). With a known KEY_VALUE we can safely proceed using it.
+            if KEY_VALUE and exc.code in (400, 409):
+                # The fixed token already exists in the DB. /key/generate will NOT touch
+                # a pre-existing key's budget, and /key/info cannot resolve a key_alias
+                # (it 404s), so find_existing_key never routes us to patch_existing_key.
+                # PATCH here by TOKEN — /key/update DOES accept `key` — so budget/limit
+                # changes actually land on existing fixed-value keys (else they're stuck).
+                print(
+                    f"/key/generate reports '{KEY_ALIAS}' token already present; "
+                    f"patching its budget/limits via /key/update"
+                )
+                update = {
+                    "key": KEY_VALUE,
+                    "models": MODELS,
+                    "max_budget": MAX_BUDGET,
+                    "rpm_limit": RPM_LIMIT,
+                    "tpm_limit": TPM_LIMIT,
+                }
+                if BUDGET_DURATION:
+                    update["budget_duration"] = BUDGET_DURATION
+                try:
+                    litellm_request("/key/update", update, method="POST")
+                    print(f"patched existing key '{KEY_ALIAS}' by token")
+                except urllib.error.HTTPError as exc2:
+                    print(
+                        f"warning: /key/update for '{KEY_ALIAS}' returned "
+                        f"{exc2.code}; continuing"
+                    )
+                return KEY_VALUE
+            raise
+        token = res.get("key") or (KEY_VALUE or None)
+        if not token:
+            raise SystemExit(f"/key/generate returned no key for '{KEY_ALIAS}'")
+        return token
+
+
+    def secret_exists():
+        try:
+            kube_request(
+                f"/api/v1/namespaces/{NS}/secrets/{KEY_SECRET}", method="GET"
+            )
+            return True
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return False
+            raise
+
+
+    def write_key_secret(token):
+        body = {
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": KEY_SECRET,
+                "namespace": NS,
+                "labels": {
+                    "app.kubernetes.io/name": "litellm",
+                    "ai-infra-platform/key-alias": KEY_ALIAS,
+                },
+            },
+            "type": "Opaque",
+            "data": {"key": base64.b64encode(token.encode("utf-8")).decode("ascii")},
+        }
+        if secret_exists():
+            kube_request(
+                f"/api/v1/namespaces/{NS}/secrets/{KEY_SECRET}",
+                body, method="PATCH",
+                content_type="application/merge-patch+json",
+            )
+            print(f"patched secret {KEY_SECRET}")
+        else:
+            kube_request(
+                f"/api/v1/namespaces/{NS}/secrets", body, method="POST"
+            )
+            print(f"created secret {KEY_SECRET}")
+
+
+    def main():
+        team_id = read_team_id()
+        existing = find_existing_key(team_id)
+        if existing is not None:
+            # Key already minted in the DB. Refresh its limits, then ensure the
+            # Secret exists; if the Secret is missing (DB has the row but the
+            # plaintext was lost) we regenerate to restore a usable plaintext.
+            patch_existing_key(team_id)
+            if KEY_VALUE:
+                # Fixed-value mode: we KNOW the plaintext, so always (re)write the
+                # Secret with it — even when the alias already exists. This makes the
+                # host-side fnox value authoritative and self-heals a stale Secret.
+                write_key_secret(KEY_VALUE)
+                print(
+                    f"virtual key '{KEY_ALIAS}' (fixed value) reconciled into "
+                    f"{KEY_SECRET}"
+                )
+                return
+            if secret_exists():
+                print(f"key alias '{KEY_ALIAS}' present and Secret intact; done")
+                return
+            print(
+                f"key alias '{KEY_ALIAS}' exists but Secret missing; regenerating"
+            )
+        token = generate_key(team_id)
+        write_key_secret(token)
+        print(f"virtual key '{KEY_ALIAS}' provisioned into {KEY_SECRET}")
+
+
+    main()

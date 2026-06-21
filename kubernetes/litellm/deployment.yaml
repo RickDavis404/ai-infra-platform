@@ -1,0 +1,296 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  # HA: >=2 replicas with RollingUpdate maxUnavailable:0 (the source's single
+  # replica + Recreate is explicitly overridden for v7 — §9.2 / §6.2).
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+      annotations:
+        # Roll the pods automatically when either mounted ConfigMap changes.
+        # (Checksums updated by the operator/CI on config edits; documented in README.)
+        ai-infra-platform/proxy-config: litellm-config
+        ai-infra-platform/pylogging-config: litellm-pylogging
+    spec:
+      # Spread the 2 replicas across distinct Lima nodes (required anti-affinity on
+      # hostname, per the §6.2 HA matrix).
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: litellm
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        # NOTE: runAsNonRoot/runAsUser are intentionally NOT set at the POD level.
+        # The pod-level runAsNonRoot:true is a hard gate the kubelet applies to EVERY
+        # container — a container-level override cannot relax it — which blocks the
+        # stage-prisma-cache init that must run as root to read the image's
+        # 0700-mode /root/.cache. Instead, non-root is enforced per-container on the
+        # workload containers (wait-for-postgres + litellm), so the staging init can
+        # run as root while the actual workload stays uid 1000.
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Gate startup on the CNPG primary being reachable. The init image is the
+        # upstream community postgres:18-alpine client (the forbidden legacy vendor
+        # init image is replaced); it ships pg_isready and matches the PG 18 CNPG
+        # line.
+        - name: wait-for-postgres
+          image: postgres:18-alpine@sha256:1b1689b20d16a014a3d195653381cf2caa75a41a92d93b255a9d6ea29fd353aa
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h litellm-pg-rw -U litellm -d litellm; do
+                echo "waiting for litellm-pg-rw to accept connections..."
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        # Make the baked prisma engine readable by the non-root workload.
+        # The litellm-database image bakes the prisma query-engine under
+        # `/root/.cache/prisma-python/...`, and the generated prisma client's
+        # BINARY_PATHS (client.py) hard-code THAT absolute path — it is authoritative
+        # at runtime and is NOT overridable via PRISMA_QUERY_ENGINE_BINARY /
+        # PRISMA_HOME_DIR (verified). `/root` is mode 0700, so the workload's uid 1000
+        # cannot traverse it -> `PermissionError` -> prisma `NotConnectedError` ->
+        # `Application startup failed. Exiting.` -> CrashLoop. Fix: this init
+        # container (root, same image) copies the entire baked `/root/.cache` into the
+        # `root-home` emptyDir (staged at /staged); the MAIN container mounts that same
+        # volume AT `/root`, so (a) the mountpoint dir is group/world-traversable
+        # (emptyDir + fsGroup, not 0700) and (b) `/root/.cache/...` now contains a
+        # uid-1000-readable copy at exactly the path BINARY_PATHS expects.
+        - name: stage-prisma-cache
+          image: ghcr.io/berriai/litellm-database:v1.91.0-rc.1@sha256:5b0f97edc30ab2ef2bfb5f97af166bd64ed1cb2a07393cdd6697e3f7e0d0839e
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # Reproduce the baked $HOME/.cache under the staged volume root.
+              mkdir -p /staged/.cache
+              cp -a /root/.cache/. /staged/.cache/
+              chmod -R a+rX /staged/.cache
+              echo "staged /root/.cache -> root-home volume"
+          volumeMounts:
+            - name: root-home
+              mountPath: /staged
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            # Runs as root ONLY to read the image's 0700-mode /root/.cache and copy
+            # the baked prisma engine into the shared emptyDir. No privilege
+            # escalation, all caps dropped, read-only rootfs. The pod no longer sets a
+            # pod-level runAsNonRoot gate (see pod securityContext note), so this is
+            # permitted; every OTHER container pins runAsNonRoot:true + uid 1000.
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: litellm
+          image: ghcr.io/berriai/litellm-database:v1.91.0-rc.1@sha256:5b0f97edc30ab2ef2bfb5f97af166bd64ed1cb2a07393cdd6697e3f7e0d0839e
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/litellm/proxy_config.yaml
+            - --port
+            - "4000"
+            - --telemetry
+            - "false"
+            # 1 uvicorn worker per replica. Each worker loads the full LiteLLM +
+            # model config and resides at ~1GB RSS; with 2 workers a single replica
+            # sits at ~3GB. On the 4-CPU/8GiB Lima nodes — which also co-host
+            # ClickHouse (~0.8-2GiB), langfuse-web (~0.7GiB) and the control plane —
+            # two such replicas pushed a node into memory exhaustion: kswapd0 pegged
+            # ~90% CPU thrashing to reclaim, load avg >70, and the kube-apiserver /
+            # Cilium pods on that node flapped Ready<->NotReady. 1 worker (~1.5GiB)
+            # per replica is ample for this local platform (HA still comes from the
+            # 2 replicas, spread one-per-node by the pod anti-affinity above).
+            - --num_workers
+            - "1"
+          ports:
+            - name: http
+              containerPort: 4000
+              protocol: TCP
+          env:
+            # CNPG-minted Postgres connection string (uri form). Consumed as a
+            # secretKeyRef; never a hand-built literal.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-pg-app
+                  key: uri
+            # Admin master key — gates /key/*, /team/*, /user/* and the admin UI.
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: LITELLM_MASTER_KEY
+            # Langfuse success/failure callback target + project keys.
+            - name: LANGFUSE_HOST
+              value: http://langfuse-web.langfuse.svc.cluster.local:3000
+            - name: LANGFUSE_PUBLIC_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: LANGFUSE_PUBLIC_KEY
+            - name: LANGFUSE_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: LANGFUSE_SECRET_KEY
+            # Codex/Claude request+response bodies exceed the Langfuse SDK's 1MB
+            # default and would be truncated; raise both ceilings to 100MB.
+            - name: LANGFUSE_MAX_EVENT_SIZE_BYTES
+              value: "100000000"
+            - name: LANGFUSE_MAX_BATCH_SIZE_BYTES
+              value: "100000000"
+            # Structured JSON logging; sitecustomize.py (PYTHONPATH) rewrites the
+            # uvicorn.access records into JSON before LiteLLM's JsonFormatter runs.
+            - name: JSON_LOGS
+              value: "True"
+            - name: PYTHONPATH
+              value: /etc/litellm-pylogging
+            # HOME stays /root so prisma resolves the SAME `/root/.cache/...` paths the
+            # generated BINARY_PATHS hard-code; the `root-home` volume (init-populated)
+            # is mounted at /root and IS writable + uid-1000-readable, unlike the
+            # image's 0700 /root. (Do NOT repoint HOME away from /root or prisma's
+            # baked BINARY_PATHS and the live HOME diverge.)
+            - name: HOME
+              value: /root
+            # OTLP/HTTP to the in-cluster OTel Collector in the lgtm plane. v7
+            # standardizes on plain :4318 with /v1/* paths (no /otel prefix).
+            - name: OTEL_EXPORTER
+              value: otlp_http
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
+            - name: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+              value: http://otel-collector.lgtm.svc.cluster.local:4318/v1/traces
+            - name: OTEL_EXPORTER_OTLP_METRICS_ENDPOINT
+              value: http://otel-collector.lgtm.svc.cluster.local:4318/v1/metrics
+            - name: OTEL_EXPORTER_OTLP_LOGS_ENDPOINT
+              value: http://otel-collector.lgtm.svc.cluster.local:4318/v1/logs
+            # NOTE: ANTHROPIC_API_KEY is intentionally ABSENT — not even an empty
+            # literal. A configured key makes the anthropic provider take the
+            # x-api-key path and breaks OAuth forwarding (§9.5).
+          resources:
+            requests:
+              cpu: 400m
+              memory: 1Gi
+            limits:
+              # 8Gi ceiling is deliberate: two workers spike past 3Gi; a 4Gi cap
+              # OOM'd in the POC (§9.2).
+              cpu: 1500m
+              memory: 8Gi
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            # DB connect + config load on first boot can be slow; give 5 minutes.
+            httpGet:
+              path: /health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            allowPrivilegeEscalation: false
+            # readOnlyRootFilesystem MUST be false for this image: prisma-python links
+            # and SPAWNS its query-engine at runtime and needs to write outside the
+            # volumes we mount (litellm #14741 / #11864 / #9298). Still hardened:
+            # runAsNonRoot (uid 1000), no privilege escalation, all caps dropped.
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: proxy-config
+              mountPath: /etc/litellm
+              readOnly: true
+            - name: pylogging
+              mountPath: /etc/litellm-pylogging
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            # Mounted at /root (HOME): a writable, uid-1000-traversable replacement for
+            # the image's 0700 /root, pre-populated by stage-prisma-cache with the
+            # baked prisma engine cache at /root/.cache/... (where BINARY_PATHS point).
+            - name: root-home
+              mountPath: /root
+      volumes:
+        - name: proxy-config
+          configMap:
+            name: litellm-config
+            items:
+              - key: proxy_config.yaml
+                path: proxy_config.yaml
+        - name: pylogging
+          configMap:
+            name: litellm-pylogging
+            items:
+              - key: sitecustomize.py
+                path: sitecustomize.py
+        - name: tmp
+          emptyDir: {}
+        # Writable /root (HOME) for the main container, pre-populated by the
+        # stage-prisma-cache initContainer with the image's baked /root/.cache so the
+        # prisma engine is uid-1000-readable at the BINARY_PATHS-expected location.
+        - name: root-home
+          emptyDir: {}

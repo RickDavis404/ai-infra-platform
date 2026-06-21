@@ -1,0 +1,135 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+data:
+  # Mounted at /etc/litellm/proxy_config.yaml and passed via --config. os.environ/*
+  # references are resolved by LiteLLM at startup from the Deployment env (secretKeyRef
+  # / values), so no secret material lives in this ConfigMap.
+  proxy_config.yaml: |
+    general_settings:
+      forward_client_headers_to_llm_api: true   # keystone of both passthrough paths
+      master_key: os.environ/LITELLM_MASTER_KEY
+      database_url: os.environ/DATABASE_URL      # CNPG-minted; secretKeyRef
+      store_model_in_db: true
+      store_prompts_in_spend_logs: true
+      maximum_spend_logs_retention_period: "90d"
+      # DO NOT set litellm_key_header_name. The DEFAULT header x-litellm-api-key is
+      # load-bearing: v1.90.0 OAuth auto-forwarding hardcodes "x-litellm-api-key"
+      # when deciding which header authenticated the proxy, then refuses to forward
+      # that header. Authenticating with the default name lets the client's
+      # Authorization (OAuth) survive forwarding. A custom name drops the OAuth token.
+
+    litellm_settings:
+      drop_params: true
+      set_verbose: false
+      num_retries: 3
+      request_timeout: 600          # local models: 80-100K-token Claude Code context
+      stream_timeout: 900           # cold load + prompt-processing before first chunk
+      cooldown_time: 30
+      success_callback: ["langfuse"]   # rich trace on every success
+      failure_callback: ["langfuse"]   # rich trace on every failure
+      callbacks: ["otel", "prometheus"]
+      langfuse_session_id_header: "X-Claude-Code-Session-Id"
+      langfuse_default_tags:
+        - proxy_base_url
+        - user_api_key_alias
+        - user_api_key_team_alias
+        - user_api_key_user_email
+        - model_group
+        - cache_hit
+        - semantic-similarity
+      require_auth_for_metrics_endpoint: false   # localhost-only; document tradeoff
+
+    model_list:
+      # --- Local routes (§9.3) -------------------------------------------------
+      # Default chat model (alias resolved at §9.6); the on-disk weights path is
+      # supplied to llama-swap via AI_INFRA_DEFAULT_CHAT_MODEL_PATH, NOT to LiteLLM.
+      # LiteLLM forwards the bare openai/<org>/<model> name.
+      - model_name: "mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf"
+        litellm_params:
+          model: "openai/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      # Additional small local chat models served by llama-swap (same host route).
+      - model_name: "mac-local/lmstudio-community/gemma-4-e2b-it-q8-0-gguf"
+        litellm_params:
+          model: "openai/lmstudio-community/gemma-4-e2b-it-q8-0-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      - model_name: "mac-local/unsloth/qwen3.5-4b-q4-k-s-gguf"
+        litellm_params:
+          model: "openai/unsloth/qwen3.5-4b-q4-k-s-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      - model_name: "mac-local/lmstudio-community/llama-3.2-1b-instruct-q8-0-gguf"
+        litellm_params:
+          model: "openai/lmstudio-community/llama-3.2-1b-instruct-q8-0-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      - model_name: "mac-local/ibm-granite/granite-4.1-3b-q8-0-gguf"
+        litellm_params:
+          model: "openai/ibm-granite/granite-4.1-3b-q8-0-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      - model_name: "mac-local/memoryco-ai/nemotron-3-nano-4b-q4-k-m-gguf"
+        litellm_params:
+          model: "openai/memoryco-ai/nemotron-3-nano-4b-q4-k-m-gguf"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      # Embedding route KEPT (no default embedding model in v1; smoke-only when
+      # explicitly enabled). bge-m3 served by llama-server --embedding via llama-swap.
+      - model_name: "mac-local/gpustack/bge-m3"
+        litellm_params:
+          model: "openai/gpustack/bge-m3"
+          api_base: "http://host.lima.internal:38080/v1"
+          api_key: "none"
+
+      # --- Claude Code Max passthrough (§9.5) ---------------------------------
+      # Single wildcard captures the suffix and routes every current AND future
+      # Claude model to anthropic/claude-*. The proxy holds NO Anthropic key; this
+      # route is OAuth/subscription-only and is never valid in a fallbacks chain.
+      - model_name: "claude-*"
+        litellm_params:
+          model: "anthropic/claude-*"
+
+      # --- OpenAI / Codex passthrough (§9.4) ----------------------------------
+      # Native chatgpt/ provider, made STARTUP-SAFE by the §8b client-OAuth
+      # passthrough monkeypatch in the litellm-pylogging sitecustomize.py.
+      # mode: responses marks the model as Responses-API native (Codex custom
+      # providers use wire_api = "responses").
+      #
+      # WHY THIS IS NOW IN THE STATIC model_list (previously it was not): stock
+      # v1.90.0's chatgpt/ provider resolves auth EAGERLY (ChatGPTConfig
+      # ._get_openai_compatible_provider_info / *.validate_environment both call
+      # Authenticator.get_access_token()), which runs a BLOCKING interactive
+      # device-flow OAuth when no token file exists — crashing/hanging proxy
+      # startup on a headless cluster ("Application startup failed. Exiting.").
+      # The §8b patch removes that hazard: it never invokes the blocking
+      # device-flow at load time and instead reuses the Codex-forwarded ChatGPT
+      # subscription OAuth (Authorization: Bearer + chatgpt-account-id) per
+      # request. So the route loads hands-off and `mise run up` stays clean; the
+      # subscription credential is supplied by the Codex client at request time,
+      # never by the proxy. (Upstream lacks a native lazy/deferred-auth mode:
+      # github.com/BerriAI/litellm#27175.)
+      - model_name: "gpt-5.4"
+        model_info: { mode: responses }
+        litellm_params:
+          model: "chatgpt/gpt-5.4"
+          api_base: "https://chatgpt.com/backend-api/codex"
+      # gpt-5.5 is the current Codex CLI default (~/.codex `model = "gpt-5.5"`); same
+      # ChatGPT-subscription passthrough route as 5.4 (client-OAuth-only).
+      - model_name: "gpt-5.5"
+        model_info: { mode: responses }
+        litellm_params:
+          model: "chatgpt/gpt-5.5"
+          api_base: "https://chatgpt.com/backend-api/codex"

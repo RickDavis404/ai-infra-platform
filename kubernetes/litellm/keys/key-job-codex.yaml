@@ -1,0 +1,177 @@
+# Virtual-key Job: codex (team `agents`). Mints the Codex CLI proxy-auth key via
+# POST /key/generate (master-key auth) and writes the plaintext into Secret
+# litellm-key-codex (field `key`). The same plaintext is mirrored into fnox/age under
+# CODEX_LITELLM_VIRTUAL_KEY by the operator so the host-side Codex client can read it.
+#
+# Idempotency contract (§11.4.4): GET-then-PATCH-or-POST. We DO NOT skip-if-exists —
+# when the LiteLLM_VerificationToken table is re-bootstrapped, a stale Secret would
+# 401 consumers, so we regenerate and overwrite. Recovery runbook in ../README.md.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: litellm-key-codex
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: litellm-key-provisioner
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Wait for the team-provision Job to have written team ids, AND for the
+        # gateway to be Ready, before minting a key bound to team `agents`.
+        - name: wait-for-team-ids
+          image: python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: NAMESPACE
+              value: litellm
+            - name: TEAM_SECRET_NAME
+              value: litellm-team-ids
+            - name: LITELLM_BASE_URL
+              value: http://litellm.litellm.svc.cluster.local:4000
+          command:
+            - python3
+            - -c
+            - |
+              import os
+              import ssl
+              import time
+              import urllib.error
+              import urllib.request
+
+              NS = os.environ["NAMESPACE"]
+              SECRET = os.environ["TEAM_SECRET_NAME"]
+              BASE = os.environ["LITELLM_BASE_URL"].rstrip("/")
+              HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+              PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+              SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+              with open(f"{SA}/token", encoding="utf-8") as fh:
+                  token = fh.read().strip()
+              ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+              secret_url = f"https://{HOST}:{PORT}/api/v1/namespaces/{NS}/secrets/{SECRET}"
+
+              for _ in range(120):
+                  ready = team = False
+                  try:
+                      with urllib.request.urlopen(
+                          f"{BASE}/health/readiness", timeout=5
+                      ) as resp:
+                          ready = resp.status == 200
+                  except urllib.error.URLError:
+                      ready = False
+                  try:
+                      req = urllib.request.Request(
+                          secret_url, headers={"Authorization": f"Bearer {token}"}
+                      )
+                      with urllib.request.urlopen(req, context=ctx, timeout=5) as resp:
+                          team = resp.status == 200
+                  except urllib.error.URLError:
+                      team = False
+                  if ready and team:
+                      print("gateway ready and team-ids present")
+                      raise SystemExit(0)
+                  print(f"waiting (ready={ready}, team-ids={team})")
+                  time.sleep(5)
+              raise SystemExit("prerequisites not met in time")
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: mint-key
+          image: python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: LITELLM_MASTER_KEY
+            # Fixed virtual-key value sourced from fnox+age (mirrored into
+            # litellm-app-secrets by `mise run secrets:sync`). The keymint script mints
+            # THIS exact token so the DB key == the value the host-side Codex client
+            # already holds — no out-of-band "mirror to fnox" step, fully hands-off.
+            - name: KEY_VALUE
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: CODEX_LITELLM_VIRTUAL_KEY
+            - name: LITELLM_BASE_URL
+              value: http://litellm.litellm.svc.cluster.local:4000
+            - name: NAMESPACE
+              value: litellm
+            - name: TEAM_SECRET_NAME
+              value: litellm-team-ids
+            - name: KEY_ALIAS
+              value: codex
+            - name: TEAM_NAME
+              value: agents
+            - name: KEY_SECRET_NAME
+              value: litellm-key-codex
+            # Codex routes via the chatgpt/ passthrough plus local mac-local/* models.
+            - name: KEY_MODELS
+              value: >-
+                ["gpt-5.4", "gpt-5.5", "mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf",
+                "mac-local/lmstudio-community/gemma-4-e2b-it-q8-0-gguf",
+                "mac-local/unsloth/qwen3.5-4b-q4-k-s-gguf",
+                "mac-local/lmstudio-community/llama-3.2-1b-instruct-q8-0-gguf",
+                "mac-local/ibm-granite/granite-4.1-3b-q8-0-gguf",
+                "mac-local/memoryco-ai/nemotron-3-nano-4b-q4-k-m-gguf"]
+            - name: KEY_MAX_BUDGET
+              value: "1000.0"
+            - name: KEY_BUDGET_DURATION
+              value: "1h"
+            - name: KEY_RPM_LIMIT
+              value: "100000"
+            - name: KEY_TPM_LIMIT
+              value: "200000000"
+          command:
+            - python3
+            - /opt/keymint/mint_key.py
+          volumeMounts:
+            - name: keymint
+              mountPath: /opt/keymint
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: keymint
+          configMap:
+            name: litellm-keymint-script
+            items:
+              - key: mint_key.py
+                path: mint_key.py

@@ -1,0 +1,15 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: litellm
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  # Keep at least one replica serving through voluntary disruptions (node drains,
+  # rollouts). With replicas: 2 and maxUnavailable: 0 on the Deployment, this is the
+  # §6.2 HA budget for the gateway.
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm

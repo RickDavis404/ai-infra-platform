@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# LiteLLM virtual-key provisioning — SEPARATE base from the gateway itself. Apply
+# this AFTER `kubectl apply -k kubernetes/litellm` and after the Deployment is Ready,
+# because every Job curls the live gateway (/health/readiness, /team/new,
+# /key/generate). Run order within this base is enforced by initContainers, not by
+# kustomize:
+#
+#   team-job        -> writes Secret litellm-team-ids  (teams: agents, service)
+#   key-job-*       -> init-wait on litellm-team-ids, then mint per-client keys into
+#                      Secret litellm-key-<alias> (idempotent GET-then-PATCH-or-POST)
+#
+# All Jobs authenticate to the gateway with the admin master key from
+# litellm-app-secrets and run under the `litellm-key-provisioner` ServiceAccount,
+# which is scoped to get/create/patch Secrets in THIS namespace only.
+namespace: litellm
+
+resources:
+  - rbac.yaml
+  - keymint-script.yaml
+  - team-job.yaml
+  - key-job-codex.yaml
+  - key-job-claude-code.yaml
+  - key-job-smoke-test.yaml
+
+commonLabels:
+  app.kubernetes.io/name: litellm
+  app.kubernetes.io/part-of: ai-infra-platform
+  app.kubernetes.io/component: gateway-key-provisioner
