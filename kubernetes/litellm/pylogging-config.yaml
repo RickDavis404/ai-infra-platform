@@ -1,0 +1,598 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-pylogging
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+data:
+  # Mounted at /etc/litellm-pylogging and loaded via PYTHONPATH so Python imports it
+  # automatically at interpreter startup (the `sitecustomize` hook). It has TWO
+  # responsibilities, in order:
+  #   §8a — rewrite uvicorn.access records into structured JSON before LiteLLM's
+  #         JsonFormatter handlers run (provider-neutral; installed first).
+  #   §8b — ChatGPT client-OAuth passthrough monkeypatch (EXPERIMENTAL, §9.4):
+  #         makes LiteLLM's chatgpt/ provider reuse the Codex-forwarded ChatGPT
+  #         subscription OAuth (Authorization: Bearer + chatgpt-account-id) instead
+  #         of running a BLOCKING device-flow at model-load. Opt-out with
+  #         CHATGPT_PASSTHROUGH_PATCH=0; default-on. Pinned to LiteLLM v1.90.0
+  #         internals and wholly best-effort — every import/override is guarded so a
+  #         future image upgrade can never block or crash proxy startup.
+  sitecustomize.py: |
+    """Structured uvicorn access logging for LiteLLM (§8a).
+
+    Loaded automatically at interpreter startup because /etc/litellm-pylogging is on
+    PYTHONPATH. Its single job is to convert uvicorn's positional access-log records
+    (``'%s - "%s %s HTTP/%s" %d'`` with a 5-tuple of args) into a flat mapping of
+    fields (client_addr / method / path / http_version / status_code) attached to the
+    LogRecord, then route the record through a JSON formatter. This runs BEFORE
+    LiteLLM installs its own JsonFormatter handlers, so access lines are emitted as
+    valid JSON instead of the default human-readable string.
+
+    Provider-neutral: it inspects no request bodies, headers, or credentials, and
+    forwards nothing. It only reshapes the access log line.
+    """
+
+    import json
+    import logging
+    import os
+
+
+    _ACCESS_LOGGER = "uvicorn.access"
+    # uvicorn emits access records with exactly five positional args.
+    _ACCESS_ARG_COUNT = 5
+
+
+    class _UvicornAccessJsonFilter(logging.Filter):
+        """Promote uvicorn's positional access args to structured record fields.
+
+        uvicorn logs access lines as::
+
+            logger.info('%s - "%s %s HTTP/%s" %d', client_addr, method, path,
+                        http_version, status_code)
+
+        We unpack that tuple onto the record so a JSON formatter can serialize named
+        keys. Records that do not match the access shape are passed through untouched.
+        """
+
+        def filter(self, record: logging.LogRecord) -> bool:
+            args = record.args
+            if isinstance(args, tuple) and len(args) == _ACCESS_ARG_COUNT:
+                client_addr, method, path, http_version, status_code = args
+                record.client_addr = str(client_addr)
+                record.method = str(method)
+                record.path = str(path)
+                record.http_version = str(http_version)
+                try:
+                    record.status_code = int(status_code)
+                except (TypeError, ValueError):
+                    record.status_code = status_code
+                record.access = True
+            return True
+
+
+    class _UvicornAccessJsonFormatter(logging.Formatter):
+        """Serialize access (and any other) records on this logger as one JSON line."""
+
+        def format(self, record: logging.LogRecord) -> str:
+            if getattr(record, "access", False):
+                payload = {
+                    "log": "uvicorn.access",
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "client_addr": getattr(record, "client_addr", None),
+                    "method": getattr(record, "method", None),
+                    "path": getattr(record, "path", None),
+                    "http_version": getattr(record, "http_version", None),
+                    "status_code": getattr(record, "status_code", None),
+                }
+            else:
+                payload = {
+                    "log": record.name,
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                }
+            return json.dumps(payload, default=str)
+
+
+    def _install() -> None:
+        """Attach the filter+formatter to uvicorn.access and stop propagation.
+
+        Idempotent: re-running attaches at most one handler/filter. Honors JSON_LOGS
+        so a deployment that opts out of JSON logging keeps uvicorn's native format.
+        """
+        if os.environ.get("JSON_LOGS", "").strip().lower() not in {"true", "1", "yes"}:
+            return
+
+        access_logger = logging.getLogger(_ACCESS_LOGGER)
+
+        if not any(
+            isinstance(f, _UvicornAccessJsonFilter) for f in access_logger.filters
+        ):
+            access_logger.addFilter(_UvicornAccessJsonFilter())
+
+        handler = next(
+            (
+                h
+                for h in access_logger.handlers
+                if getattr(h, "_litellm_access_json", False)
+            ),
+            None,
+        )
+        if handler is None:
+            handler = logging.StreamHandler()
+            handler._litellm_access_json = True  # type: ignore[attr-defined]
+            access_logger.addHandler(handler)
+        handler.setFormatter(_UvicornAccessJsonFormatter())
+
+        # We own the rendering for this logger; don't double-emit via the root.
+        access_logger.propagate = False
+
+
+    try:
+        _install()
+    except Exception:  # noqa: BLE001 -- logging setup must never crash the proxy
+        # Structured access logging is best-effort; never break interpreter startup.
+        pass
+
+    # ====================================================================
+    # §8b — ChatGPT client-OAuth passthrough monkeypatch (EXPERIMENTAL).
+    # Self-contained and fully guarded (see the docstring immediately
+    # below). Installed AFTER §8a; this whole block lives at module level
+    # inside the sitecustomize literal and never raises.
+    # ====================================================================
+    """§8b ChatGPT client-OAuth passthrough monkeypatch (EXPERIMENTAL, version-coupled).
+
+    Pinned to LiteLLM v1.90.0 (image ghcr.io/berriai/litellm-database:v1.90.0). Wholly
+    best-effort: EVERY import and override is wrapped so that, on any future LiteLLM
+    upgrade that moves/renames these private internals, the patch logs a warning and
+    returns WITHOUT touching the proxy — interpreter/proxy startup can never be
+    bricked by this code.
+
+    Why it exists
+    -------------
+    The stock `chatgpt/` provider (llms/chatgpt) authenticates by calling
+    `Authenticator.get_access_token()`, which — if no cached token exists at
+    ~/.config/litellm/chatgpt/auth.json — runs a BLOCKING interactive device-flow
+    OAuth (prints a verification URL and polls). When the `gpt-5.4` route is loaded
+    that device-flow can fire and block, crashing the proxy on a headless cluster.
+
+    This patch makes the chatgpt provider a CLIENT-OAUTH PASSTHROUGH: the Codex client
+    already holds a ChatGPT-subscription OAuth token and forwards it as
+    `Authorization: Bearer <access_token>` plus a `chatgpt-account-id` header. We
+    prefer that forwarded credential over the device-flow authenticator. The
+    authenticator is only consulted as a fallback, and even then its failure is
+    swallowed (never raised at validate-time) so the provider can load and serve
+    without any cached token — startup-safe.
+
+    Behaviour
+    ---------
+    - `ChatGPTResponsesAPIConfig.validate_environment` / `ChatGPTConfig.validate_environment`
+      / `ChatGPTConfig._get_openai_compatible_provider_info`: prefer a forwarded
+      `Authorization: Bearer` (+ `chatgpt-account-id`) header; fall back to the
+      authenticator only if none was forwarded, and NEVER raise on auth failure.
+    - `litellm_pre_call_utils.add_provider_specific_headers_to_request`: in addition to
+      the stock Anthropic behaviour, capture the Codex passthrough header allowlist
+      from the inbound client request and attach them as a chatgpt-scoped
+      `ProviderSpecificHeader` so they survive into the upstream call.
+    - `LangFuseLogger.log_event_on_langfuse`: best-effort trace/generation naming for
+      Codex turns (no credential is ever read or logged).
+    """
+
+    import logging
+    import os
+
+    _log = logging.getLogger("litellm.chatgpt_passthrough")
+
+    # Toggle: default ON when the patch file is present, but allow an explicit opt-out.
+    _ENABLED = os.environ.get("CHATGPT_PASSTHROUGH_PATCH", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+    # Models (with and without the `chatgpt/` prefix) for which a forwarded
+    # Authorization is REQUIRED — i.e. the passthrough routes.
+    _CHATGPT_PASSTHROUGH_MODELS = frozenset(
+        base if not pfx else f"{pfx}{base}"
+        for base in (
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex-spark",
+            "codex-auto-review",
+        )
+        for pfx in ("", "chatgpt/")
+    )
+
+    # Codex identity/passthrough headers forwarded verbatim to the ChatGPT upstream.
+    _CHATGPT_PASSTHROUGH_HEADERS = (
+        "authorization",
+        "chatgpt-account-id",
+        "originator",
+        "session-id",
+        "thread-id",
+        "traceparent",
+        "tracestate",
+        "user-agent",
+        "accept",
+    )
+
+
+    def _is_passthrough_model(model) -> bool:
+        if not model:
+            return False
+        name = str(model)
+        if name in _CHATGPT_PASSTHROUGH_MODELS:
+            return True
+        # Be lenient about a stray provider prefix.
+        short = name.split("/", 1)[-1]
+        return short in _CHATGPT_PASSTHROUGH_MODELS
+
+
+    def _find_forwarded_authorization(headers):
+        """Return (authorization_value, account_id) from a header mapping, or (None, None).
+
+        Case-insensitive. Only a `Bearer ...` Authorization counts as a forwarded
+        client-OAuth credential. The VALUE is never logged.
+        """
+        if not headers:
+            return None, None
+        auth = None
+        account_id = None
+        try:
+            items = headers.items()
+        except AttributeError:
+            return None, None
+        for key, value in items:
+            kl = str(key).lower()
+            if kl == "authorization" and value and str(value).lower().startswith("bearer "):
+                auth = value
+            elif kl == "chatgpt-account-id" and value:
+                account_id = value
+        return auth, account_id
+
+
+    def _input_text_preview(litellm_params, limit: int = 120) -> str:
+        """Best-effort short preview of the request input for Langfuse trace naming."""
+        try:
+            params = litellm_params
+            if hasattr(params, "model_dump"):
+                params = params.model_dump()
+            if not isinstance(params, dict):
+                return ""
+            candidate = params.get("input") or params.get("messages")
+            text = ""
+            if isinstance(candidate, str):
+                text = candidate
+            elif isinstance(candidate, list):
+                for item in candidate:
+                    if isinstance(item, dict):
+                        content = item.get("content")
+                        if isinstance(content, str):
+                            text = content
+                            break
+                        if isinstance(content, list):
+                            for part in content:
+                                if isinstance(part, dict) and isinstance(
+                                    part.get("text"), str
+                                ):
+                                    text = part["text"]
+                                    break
+                        if text:
+                            break
+            text = " ".join(text.split())
+            return text[:limit]
+        except Exception:  # noqa: BLE001
+            return ""
+
+
+    def _patch_chatgpt_passthrough_auth() -> None:  # noqa: PLR0915
+        if not _ENABLED:
+            _log.info("ChatGPT passthrough patch disabled via CHATGPT_PASSTHROUGH_PATCH.")
+            return
+
+        # --- Import the version-specific internals (best-effort) -------------------
+        try:
+            from litellm.exceptions import AuthenticationError
+            from litellm.llms.chatgpt.chat.transformation import ChatGPTConfig
+            from litellm.llms.chatgpt.responses.transformation import (
+                ChatGPTResponsesAPIConfig,
+            )
+            from litellm.llms.chatgpt.common_utils import (
+                ensure_chatgpt_session_id,
+                get_chatgpt_default_headers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning(
+                "ChatGPT passthrough patch: provider internals not importable (%s); "
+                "skipping (startup unaffected).",
+                exc,
+            )
+            return
+
+        def _headers_with_forwarded_auth(self, headers, model, litellm_params):
+            """Build upstream headers, preferring the forwarded client OAuth token.
+
+            Returns the merged header dict. Never raises: if no forwarded auth AND the
+            authenticator cannot produce a token, returns the (possibly auth-less)
+            merged headers so model-load / validate never blocks or crashes.
+            """
+            forwarded_auth, forwarded_account = _find_forwarded_authorization(headers)
+            session_id = ensure_chatgpt_session_id(litellm_params)
+
+            if forwarded_auth:
+                # Client-OAuth passthrough: trust the forwarded Bearer token. Derive an
+                # account id from the header if present, else from the authenticator's
+                # cached creds (best-effort), else omit.
+                account_id = forwarded_account
+                if not account_id:
+                    try:
+                        account_id = self.authenticator.get_account_id()
+                    except Exception:  # noqa: BLE001
+                        account_id = None
+                access_token = str(forwarded_auth).split(" ", 1)[-1]
+                default_headers = get_chatgpt_default_headers(
+                    access_token, account_id, session_id
+                )
+                # Preserve the forwarded passthrough headers verbatim (case-insensitive).
+                merged = {**default_headers}
+                for key, value in (headers or {}).items():
+                    if str(key).lower() in _CHATGPT_PASSTHROUGH_HEADERS:
+                        merged[key] = value
+                merged.update(headers or {})
+                return merged
+
+            # No forwarded credential for a passthrough model. Do NOT consult the
+            # device-flow authenticator here: get_access_token() BLOCKS on an
+            # interactive device-code login (polls up to 15 min) when no cached token
+            # exists, which is exactly the startup/crash hazard this patch removes. A
+            # passthrough route is client-OAuth-only by design, so with no forwarded
+            # token we return auth-less headers; the upstream then returns 401, which
+            # surfaces as an ordinary per-request error instead of a blocking boot.
+            if _is_passthrough_model(model):
+                _log.warning(
+                    "ChatGPT passthrough: no forwarded Authorization for passthrough "
+                    "model %s; forwarding without a subscription token (expect upstream "
+                    "401). This route is client-OAuth-only.",
+                    model,
+                )
+                return dict(headers or {})
+
+            # Non-passthrough model: defer to the original behaviour by raising the
+            # standard auth error path only if a token genuinely cannot be produced.
+            try:
+                access_token = self.authenticator.get_access_token()
+                account_id = self.authenticator.get_account_id()
+                default_headers = get_chatgpt_default_headers(
+                    access_token, account_id, session_id
+                )
+                return {**default_headers, **(headers or {})}
+            except Exception as exc:  # noqa: BLE001
+                raise AuthenticationError(
+                    model=str(model),
+                    llm_provider="chatgpt",
+                    message=str(exc),
+                )
+
+        # --- Override ChatGPTResponsesAPIConfig.validate_environment ---------------
+        try:
+            def _responses_validate_environment(self, headers, model, litellm_params):
+                return _headers_with_forwarded_auth(self, headers, model, litellm_params)
+
+            ChatGPTResponsesAPIConfig.validate_environment = _responses_validate_environment
+            ChatGPTResponsesAPIConfig._chatgpt_passthrough_auth_patch = True
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: responses validate_environment patch failed (%s).", exc)
+
+        # --- Override ChatGPTConfig.validate_environment (chat path) ---------------
+        try:
+            def _chat_validate_environment(
+                self,
+                headers,
+                model,
+                messages,
+                optional_params,
+                litellm_params,
+                api_key=None,
+                api_base=None,
+            ):
+                # Run the stock OpenAI base validation first (sets content-type etc.),
+                # but swallow any auth-related failure it surfaces.
+                try:
+                    from litellm.llms.openai.openai import OpenAIConfig
+
+                    validated = OpenAIConfig.validate_environment(
+                        self,
+                        headers,
+                        model,
+                        messages,
+                        optional_params,
+                        litellm_params,
+                        api_key,
+                        api_base,
+                    )
+                except Exception:  # noqa: BLE001
+                    validated = dict(headers or {})
+                merged = _headers_with_forwarded_auth(self, headers, model, litellm_params)
+                return {**merged, **validated}
+
+            ChatGPTConfig.validate_environment = _chat_validate_environment
+            ChatGPTConfig._chatgpt_passthrough_auth_patch = True
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: chat validate_environment patch failed (%s).", exc)
+
+        # --- Override ChatGPTConfig._get_openai_compatible_provider_info -----------
+        # This is the chat-path entry that eagerly calls get_access_token(); make it
+        # tolerant so a missing token cannot raise at model resolution.
+        try:
+            def _get_openai_compatible_provider_info(
+                self, model, api_base, api_key, custom_llm_provider
+            ):
+                try:
+                    dynamic_api_base = self.authenticator.get_api_base()
+                except Exception:  # noqa: BLE001
+                    dynamic_api_base = api_base
+                # Only use a token that is ALREADY cached on disk; do NOT call
+                # get_access_token(), which BLOCKS on an interactive device-flow login
+                # when no token file exists (the startup-crash hazard). A placeholder is
+                # safe: the real credential is supplied per-request from the forwarded
+                # Authorization header in validate_environment.
+                dynamic_api_key = api_key or "passthrough"
+                try:
+                    auth_data = self.authenticator._read_auth_file()
+                    if auth_data:
+                        cached = auth_data.get("access_token")
+                        if cached and not self.authenticator._is_token_expired(
+                            auth_data, cached
+                        ):
+                            dynamic_api_key = cached
+                except Exception:  # noqa: BLE001
+                    pass
+                return dynamic_api_base, dynamic_api_key, custom_llm_provider
+
+            ChatGPTConfig._get_openai_compatible_provider_info = (
+                _get_openai_compatible_provider_info
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: provider_info patch failed (%s).", exc)
+
+        # --- Forward the Codex passthrough headers to the chatgpt provider ---------
+        try:
+            from litellm.proxy import litellm_pre_call_utils as _pcu
+            from litellm.types.utils import LlmProviders, ProviderSpecificHeader
+
+            _orig_add_provider_specific_headers = (
+                _pcu.add_provider_specific_headers_to_request
+            )
+
+            def _add_provider_specific_headers_to_request(data, headers):
+                # Preserve stock Anthropic behaviour first.
+                try:
+                    _orig_add_provider_specific_headers(data=data, headers=headers)
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "ChatGPT passthrough: original add_provider_specific_headers "
+                        "raised (%s); continuing.",
+                        exc,
+                    )
+
+                try:
+                    model = data.get("model") if isinstance(data, dict) else None
+                    if not _is_passthrough_model(model):
+                        return
+                    # The `headers` passed here are ALREADY cleaned by clean_headers(),
+                    # which DROPS a non-Anthropic `Authorization` — so the Codex ChatGPT
+                    # OAuth Bearer is gone from `headers`. The raw inbound headers are
+                    # preserved on data["secret_fields"].raw_headers (set just above the
+                    # call site); read the forwarded credential from THERE.
+                    raw_headers = {}
+                    try:
+                        sf = data.get("secret_fields") if isinstance(data, dict) else None
+                        # secret_fields is a TypedDict -> dict; raw_headers is a key.
+                        rh = None
+                        if isinstance(sf, dict):
+                            rh = sf.get("raw_headers")
+                        else:
+                            rh = getattr(sf, "raw_headers", None)
+                        if isinstance(rh, dict):
+                            raw_headers = rh
+                    except Exception:  # noqa: BLE001
+                        raw_headers = {}
+                    # Prefer raw headers; fall back to the cleaned ones.
+                    source_headers = raw_headers or (headers or {})
+                    forwarded_auth, _ = _find_forwarded_authorization(source_headers)
+                    if not forwarded_auth:
+                        return
+                    chatgpt_headers = {}
+                    for key, value in source_headers.items():
+                        if str(key).lower() in _CHATGPT_PASSTHROUGH_HEADERS and value:
+                            chatgpt_headers[key] = value
+                    if not chatgpt_headers:
+                        return
+
+                    # (1) Inject straight into data["extra_headers"]. This is the path the
+                    # Responses API actually honours: extra_headers flows through to
+                    # ChatGPTResponsesAPIConfig.validate_environment(headers=...), where the
+                    # §8b override reads the forwarded Authorization. The chat path also
+                    # picks these up. We do NOT overwrite a header the caller already set.
+                    extra = data.get("extra_headers")
+                    if not isinstance(extra, dict):
+                        extra = {}
+                    for key, value in chatgpt_headers.items():
+                        extra.setdefault(key, value)
+                    data["extra_headers"] = extra
+
+                    # (2) Also record a chatgpt-scoped provider_specific_header so any code
+                    # path that consults it (chat/non-responses) still sees the creds. Merge
+                    # with any existing entry rather than clobber.
+                    existing = data.get("provider_specific_header")
+                    provider_csv = LlmProviders.CHATGPT.value
+                    psh_headers = dict(chatgpt_headers)
+                    if existing is not None:
+                        try:
+                            prev_provider = getattr(existing, "custom_llm_provider", "") or ""
+                            prev_headers = dict(getattr(existing, "extra_headers", {}) or {})
+                        except Exception:  # noqa: BLE001
+                            prev_provider, prev_headers = "", {}
+                        prev_headers.update(psh_headers)
+                        psh_headers = prev_headers
+                        if prev_provider:
+                            provider_csv = f"{prev_provider},{LlmProviders.CHATGPT.value}"
+                    data["provider_specific_header"] = ProviderSpecificHeader(
+                        custom_llm_provider=provider_csv,
+                        extra_headers=psh_headers,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    _log.warning(
+                        "ChatGPT passthrough: header-forward augmentation failed (%s).",
+                        exc,
+                    )
+
+            _pcu.add_provider_specific_headers_to_request = (
+                _add_provider_specific_headers_to_request
+            )
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: pre-call header patch failed (%s).", exc)
+
+        # --- Best-effort Langfuse trace naming for Codex turns ---------------------
+        try:
+            from litellm.integrations.langfuse.langfuse import LangFuseLogger
+
+            _orig_log_event = LangFuseLogger.log_event_on_langfuse
+
+            def _log_event_on_langfuse(self, kwargs, response_obj, *args, **lf_kwargs):
+                try:
+                    model = (kwargs or {}).get("model")
+                    if _is_passthrough_model(model):
+                        litellm_params = (kwargs or {}).get("litellm_params") or {}
+                        metadata = litellm_params.get("metadata")
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                            litellm_params["metadata"] = metadata
+                            kwargs["litellm_params"] = litellm_params
+                        metadata.setdefault(
+                            "trace_name",
+                            f"codex {model}: {_input_text_preview(litellm_params)}",
+                        )
+                        metadata.setdefault(
+                            "generation_name", f"codex-{model}-responses"
+                        )
+                except Exception:  # noqa: BLE001
+                    pass
+                return _orig_log_event(self, kwargs, response_obj, *args, **lf_kwargs)
+
+            LangFuseLogger.log_event_on_langfuse = _log_event_on_langfuse
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: langfuse trace-naming patch failed (%s).", exc)
+
+        _log.info("ChatGPT client-OAuth passthrough patch (§8b) installed for v1.90.0.")
+
+
+    try:
+        _patch_chatgpt_passthrough_auth()
+    except Exception:  # noqa: BLE001
+        # The passthrough patch is best-effort; it must NEVER break interpreter startup.
+        pass

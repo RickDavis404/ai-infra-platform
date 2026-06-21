@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+  annotations:
+    # Prometheus scrape of the LiteLLM /metrics/ endpoint (trailing slash is
+    # load-bearing for the LiteLLM router). Both the OpenAI/Anthropic API and the
+    # admin UI share port 4000.
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics/
+    prometheus.io/port: "4000"
+    # Cilium LB-IPAM pins this Service to a fixed VIP from the lima-shared-pool
+    # (192.168.105.200-.250). The Mac is on the same 192.168.105.0/24 L2, so the
+    # gateway is reachable DIRECTLY at 192.168.105.200:4000 — no port-forward
+    # needed (D005 / ha-networking.md §4). The correct annotation key is
+    # `lbipam.cilium.io/ips` (NOT io.cilium/lb-ipam-ips).
+    lbipam.cilium.io/ips: 192.168.105.200
+spec:
+  # type=LoadBalancer with a Cilium-pinned VIP. The backing pods stay
+  # ClusterIP-shaped (the selector + targetPort are unchanged); Cilium LB-IPAM
+  # assigns 192.168.105.200 and a CiliumL2AnnouncementPolicy ARP-announces it on
+  # lima0. port-forward (`port-forward:litellm`) is kept only as a non-HA fallback (§9.2).
+  type: LoadBalancer
+  # io.cilium/l2-announcer ensures Cilium (not some other controller) owns this LB.
+  loadBalancerClass: io.cilium/l2-announcer
+  # Cluster (NOT Local): L2-announced services must stay Cluster or traffic can be
+  # dropped on pod-less nodes (ha-networking.md §3b/§10).
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http
+      protocol: TCP

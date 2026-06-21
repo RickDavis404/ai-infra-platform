@@ -1,0 +1,263 @@
+# Team provisioning Job. Creates the two v1 teams (agents, service) on the running
+# gateway via POST /team/new (master-key auth), then writes their team IDs into the
+# Secret `litellm-team-ids` (keys: agents, service). The per-client key Jobs init-wait
+# on that Secret. Idempotent: existing teams are reused (POST /team/new is keyed on
+# team_alias upstream; on conflict we look the team up and reuse its id), and the
+# Secret is created-or-patched. Pure stdlib Python (urllib) — no pip install at runtime.
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: litellm-team-provision
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+spec:
+  backoffLimit: 5
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: litellm
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: litellm-key-provisioner
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # Block until the gateway is Ready so /team/new has a live DB + config.
+        - name: wait-for-litellm
+          image: python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+            - |
+              import time
+              import urllib.error
+              import urllib.request
+
+              url = "http://litellm.litellm.svc.cluster.local:4000/health/readiness"
+              for _ in range(120):
+                  try:
+                      with urllib.request.urlopen(url, timeout=5) as resp:
+                          if resp.status == 200:
+                              print("litellm gateway is ready")
+                              raise SystemExit(0)
+                  except urllib.error.URLError as exc:
+                      print(f"waiting for litellm readiness: {exc}")
+                  time.sleep(5)
+              raise SystemExit("litellm gateway did not become ready in time")
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      containers:
+        - name: provision-teams
+          image: python:3.12-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c3141699a1bfc852199fbf
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: LITELLM_MASTER_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: LITELLM_MASTER_KEY
+            - name: LITELLM_BASE_URL
+              value: http://litellm.litellm.svc.cluster.local:4000
+            - name: NAMESPACE
+              value: litellm
+            - name: TEAM_SECRET_NAME
+              value: litellm-team-ids
+          command:
+            - python3
+            - -c
+            - |
+              import base64
+              import json
+              import os
+              import ssl
+              import urllib.error
+              import urllib.request
+
+              BASE = os.environ["LITELLM_BASE_URL"].rstrip("/")
+              MASTER = os.environ["LITELLM_MASTER_KEY"]
+              NS = os.environ["NAMESPACE"]
+              SECRET = os.environ["TEAM_SECRET_NAME"]
+
+              # v1 teams (§11.4.3). Budgets/rate caps are conservative defaults and
+              # are tuned by the operator; subscription model spend rides the
+              # client's forwarded credential, not the proxy.
+              TEAMS = [
+                  {"team_alias": "agents", "max_budget": 10000.0,
+                   "budget_duration": "1h",
+                   "rpm_limit": 1000000, "tpm_limit": 2000000000},
+                  {"team_alias": "service", "max_budget": 10000.0,
+                   "budget_duration": "1h",
+                   "rpm_limit": 1000000, "tpm_limit": 2000000000},
+              ]
+
+              KUBE_HOST = os.environ.get("KUBERNETES_SERVICE_HOST", "kubernetes.default.svc")
+              KUBE_PORT = os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+              KUBE_API = f"https://{KUBE_HOST}:{KUBE_PORT}"
+              SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+              with open(f"{SA_DIR}/token", encoding="utf-8") as fh:
+                  KUBE_TOKEN = fh.read().strip()
+              KUBE_CTX = ssl.create_default_context(cafile=f"{SA_DIR}/ca.crt")
+
+
+              def litellm_call(path, payload):
+                  req = urllib.request.Request(
+                      f"{BASE}{path}",
+                      data=json.dumps(payload).encode("utf-8"),
+                      method="POST",
+                      headers={
+                          "Content-Type": "application/json",
+                          "Authorization": f"Bearer {MASTER}",
+                      },
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return json.loads(resp.read().decode("utf-8"))
+
+
+              def list_teams():
+                  req = urllib.request.Request(
+                      f"{BASE}/team/list",
+                      method="GET",
+                      headers={"Authorization": f"Bearer {MASTER}"},
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as resp:
+                      return json.loads(resp.read().decode("utf-8"))
+
+
+              def find_team_id(alias):
+                  try:
+                      teams = list_teams()
+                  except urllib.error.URLError:
+                      return None
+                  rows = teams if isinstance(teams, list) else teams.get("teams", teams)
+                  if isinstance(rows, dict):
+                      rows = rows.get("teams", [])
+                  for row in rows or []:
+                      info = row.get("team_info", row)
+                      if info.get("team_alias") == alias or row.get("team_alias") == alias:
+                          return info.get("team_id") or row.get("team_id")
+                  return None
+
+
+              def ensure_team(spec):
+                  alias = spec["team_alias"]
+                  existing = find_team_id(alias)
+                  if existing:
+                      # Refresh budgets/limits on the existing team so manifest changes
+                      # (raised max_budget / added budget_duration) take effect on re-run.
+                      try:
+                          litellm_call("/team/update", {**spec, "team_id": existing})
+                          print(f"team '{alias}' updated: {existing}")
+                      except urllib.error.HTTPError as exc:
+                          print(
+                              f"warning: /team/update for '{alias}' "
+                              f"returned {exc.code}; continuing"
+                          )
+                      return existing
+                  try:
+                      res = litellm_call("/team/new", spec)
+                      team_id = res.get("team_id")
+                      print(f"created team '{alias}': {team_id}")
+                      return team_id
+                  except urllib.error.HTTPError as exc:
+                      # Race / already-exists: re-resolve from the list endpoint.
+                      again = find_team_id(alias)
+                      if again:
+                          print(f"team '{alias}' resolved after conflict: {again}")
+                          return again
+                      raise SystemExit(
+                          f"failed to create team '{alias}': {exc.code} "
+                          f"{exc.read().decode('utf-8', 'replace')}"
+                      )
+
+
+              def kube_get_secret():
+                  url = f"{KUBE_API}/api/v1/namespaces/{NS}/secrets/{SECRET}"
+                  req = urllib.request.Request(
+                      url, method="GET",
+                      headers={"Authorization": f"Bearer {KUBE_TOKEN}"},
+                  )
+                  try:
+                      with urllib.request.urlopen(req, context=KUBE_CTX, timeout=30) as resp:
+                          return json.loads(resp.read().decode("utf-8"))
+                  except urllib.error.HTTPError as exc:
+                      if exc.code == 404:
+                          return None
+                      raise
+
+
+              def kube_write_secret(data_b64):
+                  body = {
+                      "apiVersion": "v1",
+                      "kind": "Secret",
+                      "metadata": {
+                          "name": SECRET,
+                          "namespace": NS,
+                          "labels": {"app.kubernetes.io/name": "litellm"},
+                      },
+                      "type": "Opaque",
+                      "data": data_b64,
+                  }
+                  if kube_get_secret() is None:
+                      url = f"{KUBE_API}/api/v1/namespaces/{NS}/secrets"
+                      method = "POST"
+                      ctype = "application/json"
+                  else:
+                      url = f"{KUBE_API}/api/v1/namespaces/{NS}/secrets/{SECRET}"
+                      method = "PATCH"
+                      ctype = "application/merge-patch+json"
+                  req = urllib.request.Request(
+                      url, data=json.dumps(body).encode("utf-8"), method=method,
+                      headers={
+                          "Authorization": f"Bearer {KUBE_TOKEN}",
+                          "Content-Type": ctype,
+                      },
+                  )
+                  with urllib.request.urlopen(req, context=KUBE_CTX, timeout=30) as resp:
+                      print(f"{method} secret {SECRET}: {resp.status}")
+
+
+              def main():
+                  ids = {}
+                  for spec in TEAMS:
+                      ids[spec["team_alias"]] = ensure_team(spec)
+                  data_b64 = {
+                      alias: base64.b64encode(team_id.encode("utf-8")).decode("ascii")
+                      for alias, team_id in ids.items()
+                  }
+                  kube_write_secret(data_b64)
+                  print("team ids written to secret", SECRET)
+
+
+              main()
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
