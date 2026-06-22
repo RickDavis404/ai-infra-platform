@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.ai-infra.otelcol.plist — launchd user agent for the Mac-side OTel Collector.
+
+  Representative template. `__HOME__` is substituted with the user's real home
+  directory by scripts/host/up.sh at install time. Install to
+  ~/Library/LaunchAgents/ and load with
+  `launchctl bootstrap gui/$(id -u) <plist>`.
+
+  otelcol-contrib has no Homebrew formula, so the pinned binary is staged to
+  ~/.local/bin/ (outside any TCC-protected tree). It exposes NO inbound public
+  port; all receivers bind 127.0.0.1. It exports OTLP/HTTP to the in-cluster
+  Collector at http://127.0.0.1:4318/v1/* via kubectl port-forward.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.ai-infra.otelcol</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>__HOME__/.local/bin/otelcol-contrib</string>
+      <string>--config</string>
+      <string>__HOME__/.config/ai-infra/otelcol-config.yaml</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+      <key>HOME</key>
+      <string>__HOME__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/otelcol.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/otelcol.log</string>
+  </dict>
+</plist>

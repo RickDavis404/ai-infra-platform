@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.ai-infra.macmon-exporter.plist — launchd user agent for the macmon exporter.
+
+  Representative template. `__HOME__` is substituted with the user's real home
+  directory by scripts/host/up.sh at install time. Install to
+  ~/Library/LaunchAgents/ and load with
+  `launchctl bootstrap gui/$(id -u) <plist>`.
+
+  POC lesson (§8.4): this job MUST put /usr/sbin on PATH (macmon shells out to
+  powermetrics there) and the wrapper uses the explicit /opt/homebrew/bin/python3
+  interpreter (the `env python3` shim can resolve to the Command Line Tools stub
+  under launchd). The exporter binds 127.0.0.1:39300 only. Both the wrapper and the
+  exporter are staged to ~/.local/bin/ (outside any TCC-protected tree).
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.ai-infra.macmon-exporter</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>__HOME__/.local/bin/ai-infra-macmon-exporter.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/usr/sbin:/opt/homebrew/bin:/usr/bin:/bin:/sbin:__HOME__/.local/bin</string>
+      <key>HOME</key>
+      <string>__HOME__</string>
+      <key>AI_INFRA_MACMON_BIND_HOST</key>
+      <string>127.0.0.1</string>
+      <key>AI_INFRA_MACMON_BIND_PORT</key>
+      <string>39300</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/macmon-exporter.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/macmon-exporter.log</string>
+  </dict>
+</plist>
