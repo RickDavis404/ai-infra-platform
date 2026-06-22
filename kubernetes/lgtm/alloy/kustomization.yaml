@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Grafana Alloy — meta-observability ONLY (§13.2.3). It ships the in-cluster OTel
+# Collector's own pod logs to Loki and nothing else; it is NOT the general log path
+# (that is the OTel Collector's filelog receiver). DaemonSet, tiny footprint.
+# Inlined via Helm and rendered with `kustomize build --enable-helm`. Pin is exact
+# (chart 1.10.0); it does not float. See README.md.
+helmCharts:
+- name: alloy
+  repo: https://grafana.github.io/helm-charts
+  version: 1.10.0
+  releaseName: alloy
+  namespace: lgtm
+  valuesFile: values.yaml

@@ -1,0 +1,68 @@
+# kube-controller-manager metrics — headless Service (selector-based) +
+# ServiceMonitor (:10257 /metrics, HTTPS + bearer token).
+#
+# kube-controller-manager runs as a kubeadm hostNetwork static pod (mirror name
+# kube-controller-manager-<node>, ns kube-system) labelled
+# `component: kube-controller-manager` + `tier: control-plane`. Like the scheduler
+# (and unlike the kubelet), it IS a pod, so a SELECTOR-based Service auto-populates
+# its Endpoints via the built-in endpoints controller — no manual endpoint sync.
+# The Service selects `component: kube-controller-manager` and exposes targetPort
+# 10257.
+#
+# WHY ServiceMonitor (not PodMonitor): HTTPS scrape needs the Alloy SA token via
+# `bearerTokenFile` (ServiceMonitor-only). The secure port :10257 binds 0.0.0.0
+# ONLY once the kubeadm ClusterConfiguration sets `controllerManager.extraArgs
+# bind-address=0.0.0.0` (default 127.0.0.1 — see lima/templates/k8s-cilium.yaml);
+# it stays TLS + RBAC-gated. insecureSkipVerify: the serving cert is not signed
+# for the endpoint IP. Discovered cluster-wide by Alloy. Replaces the
+# prometheus-server `kube-controller-manager` static scrape job.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-controller-manager-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-controller-manager
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    component: kube-controller-manager
+  ports:
+    - name: https-metrics
+      port: 10257
+      targetPort: 10257
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-controller-manager
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-controller-manager
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-controller-manager
+  endpoints:
+    - port: https-metrics
+      scheme: https
+      path: /metrics
+      interval: 30s
+      honorLabels: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

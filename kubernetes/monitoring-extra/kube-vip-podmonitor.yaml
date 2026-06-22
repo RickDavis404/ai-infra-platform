@@ -1,0 +1,47 @@
+# PodMonitor — kube-vip control-plane VIP manager (:2112 /metrics).
+#
+# kube-vip runs as a hostNetwork STATIC pod (one per control-plane node, mirror
+# name kube-vip-<node>, ns kube-system) seeded from lima/kube-vip.yaml. Its
+# metrics listener is the `prometheus_server: :2112` env in that manifest. The
+# static pod carried no labels and declared no container port by default, so
+# lima/kube-vip.yaml was edited to add BOTH:
+#   - a label (app.kubernetes.io/name: kube-vip) for the selector below;
+#   - a NAMED container port `metrics` (containerPort 2112) for the endpoint.
+# The endpoint references the port BY NAME (not a numeric targetPort): a numeric
+# PodMonitor port becomes a `keep` relabel rule on the pod's DECLARED container
+# ports, so a static pod with no declared port generates NO target. The named
+# port avoids that. With hostNetwork the pod IP IS the node IP, so the named
+# :2112 target is the node's kube-vip metrics port.
+#
+# Discovered cluster-wide by Alloy's `prometheus.operator.podmonitors` (no label
+# selector on the Alloy side), so this object needs no special discovery label.
+# Replaces the prometheus-server `kube-vip` static scrape job (§6.3.7).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kube-vip
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-vip
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-vip
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: 30s
+      honorLabels: true
+      relabelings:
+        # Carry the node identity (hostNetwork pod -> node) into a `node` label,
+        # matching the old prometheus-server scrape job's output.
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

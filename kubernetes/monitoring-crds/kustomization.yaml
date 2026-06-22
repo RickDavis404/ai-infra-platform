@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Prometheus-Operator CRDs — ServiceMonitor + PodMonitor ONLY (monitoring.coreos.com/v1).
+#
+# This overlay vendors JUST the two custom-resource DEFINITIONS that the platform's
+# app charts emit (ServiceMonitor / PodMonitor). It does NOT deploy the
+# prometheus-operator controller: nothing reconciles these CRs into a Prometheus
+# config. Instead, Grafana Alloy (ns lgtm) runs the
+# `prometheus.operator.servicemonitors` + `prometheus.operator.podmonitors`
+# components, which natively understand these CRDs, discover every SM/PM
+# cluster-wide, scrape the targets, and remote_write to the Prometheus server. The
+# operator's reconcile loop is therefore unnecessary — only the API types are.
+#
+# Pinned to prometheus-operator v0.81.0 (the CRD YAMLs are vendored verbatim under
+# crds/, fetched from
+# github.com/prometheus-operator/prometheus-operator/example/prometheus-operator-crd
+# at tag v0.81.0). Both serve a single stored version monitoring.coreos.com/v1.
+#
+# APPLY ORDER (k8s:apply): this overlay is applied EARLY — immediately after
+# `namespaces`, BEFORE operators / data-plane / lgtm — so the ServiceMonitor and
+# PodMonitor kinds are registered with the API server before ANY chart that emits
+# those objects is applied (a chart that ships an SM against an unregistered CRD
+# fails `kubectl apply` with `no matches for kind "ServiceMonitor"`). The CRDs
+# carry no namespace and depend on nothing.
+resources:
+  - crds/monitoring.coreos.com_servicemonitors.yaml
+  - crds/monitoring.coreos.com_podmonitors.yaml

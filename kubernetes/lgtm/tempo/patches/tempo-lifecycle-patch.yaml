@@ -1,0 +1,20 @@
+# preStop sleep gives kube-proxy time to drop the Endpoint before SIGTERM, so
+# in-flight OTLP pushes are not dropped against a terminating pod.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: tempo
+  namespace: lgtm
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: tempo
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - sleep 5

@@ -1,0 +1,184 @@
+# loki/loki 18.3.0 (grafana-community.github.io/helm-charts)
+# SimpleScalable on SeaweedFS S3. read/write/backend = 2; RF 2; tsdb/v13.
+# 7-day retention enforced by the compactor on the backend target.
+
+# Enable env-var expansion in the rendered config so S3 credentials come from a
+# Secret (env) rather than committed literals.
+global:
+  extraArgs:
+    - "-config.expand-env=true"
+  # SeaweedFS S3 credentials, mirrored into lgtm as the loki-s3-creds Secret
+  # (keys SEAWEEDFS_S3_ACCESS_KEY / SEAWEEDFS_S3_SECRET_KEY). Injected into every
+  # Loki pod so ${SEAWEEDFS_S3_*} resolves in the storage config below.
+  extraEnvFrom:
+    - secretRef:
+        name: loki-s3-creds
+
+deploymentMode: SimpleScalable
+
+loki:
+  auth_enabled: false
+
+  # The chart errors if two deployment modes are non-zero; singleBinary and the
+  # distributed targets are zeroed below.
+  commonConfig:
+    replication_factor: 2
+    path_prefix: /var/loki
+
+  schemaConfig:
+    configs:
+      - from: "2024-04-01"
+        store: tsdb
+        object_store: s3
+        schema: v13
+        index:
+          prefix: loki_index_
+          period: 24h
+
+  # SeaweedFS S3 object store. Dedicated loki buckets (loki-chunks for chunks,
+  # loki-ruler for the ruler) are used rather than the langfuse-* buckets so log
+  # objects are isolated from app data. Path-style addressing is required for
+  # SeaweedFS. Credentials come from env (expand-env, loki-s3-creds Secret).
+  storage:
+    type: s3
+    bucketNames:
+      chunks: loki-chunks
+      ruler: loki-ruler
+      admin: loki-admin
+    s3:
+      endpoint: http://langfuse-seaweedfs-s3.langfuse-data.svc.cluster.local:8333
+      region: us-east-1
+      accessKeyId: "${SEAWEEDFS_S3_ACCESS_KEY}"
+      secretAccessKey: "${SEAWEEDFS_S3_SECRET_KEY}"
+      s3ForcePathStyle: true
+      insecure: true
+
+  # 64 MiB pipeline ceilings + 7-day retention + structured metadata.
+  limits_config:
+    retention_period: 168h
+    allow_structured_metadata: true
+    max_line_size: 64MB
+    max_line_size_truncate: false
+    ingestion_rate_mb: 32
+    ingestion_burst_size_mb: 64
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h
+    volume_enabled: true
+
+  # gRPC message ceilings raised to 64 MiB (67108864 bytes) to match the pipeline.
+  server:
+    grpc_server_max_recv_msg_size: 67108864
+    grpc_server_max_send_msg_size: 67108864
+    http_server_read_timeout: 600s
+    http_server_write_timeout: 600s
+
+  # The backend target runs the compactor; retention must be enabled so the 7-day
+  # retention_period actually deletes chunks.
+  compactor:
+    retention_enabled: true
+    delete_request_store: s3
+    compaction_interval: 10m
+    retention_delete_delay: 2h
+
+# SimpleScalable targets — 2 replicas each, spread across nodes.
+write:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: write
+          topologyKey: kubernetes.io/hostname
+
+read:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: read
+          topologyKey: kubernetes.io/hostname
+
+backend:
+  replicas: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app.kubernetes.io/component: backend
+          topologyKey: kubernetes.io/hostname
+
+# All other deployment-mode replicas zeroed (the chart errors if two modes are
+# non-zero).
+singleBinary:
+  replicas: 0
+
+ingester:
+  replicas: 0
+querier:
+  replicas: 0
+queryFrontend:
+  replicas: 0
+queryScheduler:
+  replicas: 0
+distributor:
+  replicas: 0
+compactor:
+  replicas: 0
+indexGateway:
+  replicas: 0
+bloomCompactor:
+  replicas: 0
+bloomGateway:
+  replicas: 0
+
+# The chart's bundled MinIO is disabled — object storage is external SeaweedFS S3.
+minio:
+  enabled: false
+
+# Component metrics are exposed via a ServiceMonitor that Alloy discovers
+# cluster-wide (Alloy has no label selector, so no extra labels needed). The
+# `monitoring.selfMonitoring` subtree was removed upstream in loki 18, so it is
+# gone here (LGTM self-monitoring is handled by the Loki gnetId dashboards).
+monitoring:
+  serviceMonitor:
+    enabled: true
+
+# lokiCanary moved to a TOP-LEVEL key in loki 18 and now defaults to `enabled: true`
+# — leaving it unset would deploy a canary DaemonSet. Keep it OFF explicitly.
+lokiCanary:
+  enabled: false
+
+test:
+  enabled: false
+
+gateway:
+  enabled: true
+  replicas: 2
+
+# No bundled chart results-cache/chunk-cache memcached scaling beyond defaults.
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false

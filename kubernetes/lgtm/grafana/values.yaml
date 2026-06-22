@@ -1,0 +1,261 @@
+# grafana/grafana 12.7.1 (grafana-community.github.io/helm-charts)
+# UI + datasource/dashboard provisioning. Login-required (no anonymous access).
+# 2 replicas, headless service for unified-alerting HA gossip, CNPG-backed DB.
+
+replicas: 2
+
+# Headless service powers unified-alerting HA peer discovery (gossip :9094).
+headlessService: true
+
+deploymentStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 1
+    maxSurge: 1
+
+# Admin user/password sourced from the grafana-admin Secret (fnox+age managed);
+# never a committed plaintext adminPassword. The chart also exports
+# GF_SECURITY_ADMIN_USER / GF_SECURITY_ADMIN_PASSWORD from this secret.
+admin:
+  existingSecret: grafana-admin
+  userKey: admin-user
+  passwordKey: admin-password
+
+# valueFrom env injected into the deployment pods (name is templated).
+# GF_DATABASE_PASSWORD -> CNPG-minted grafana-pg-app Secret (key "password").
+# (POD_IP is auto-injected by the chart when unified-alerting HA is enabled.)
+envValueFrom:
+  GF_DATABASE_PASSWORD:
+    secretKeyRef:
+      name: grafana-pg-app
+      key: password
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3000"
+
+# Emit a ServiceMonitor scraping Grafana's own /metrics (:3000). Alloy discovers
+# all ServiceMonitors cluster-wide (no label selector), so no extra labels needed.
+serviceMonitor:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# Pod anti-affinity by hostname so the 2 replicas spread across nodes.
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: grafana
+        topologyKey: kubernetes.io/hostname
+
+# Database password from the grafana CNPG cluster's app secret (uri/password key).
+# The grafana-pg CNPG cluster (-rw service) is a dependency — see README.
+# grafana.ini references GF_DATABASE_* env injected from the secret below.
+grafana.ini:
+  server:
+    # localhost + kubectl port-forward only; no reverse-proxy sub-path serving.
+    # serve_from_sub_path / root_url sub-path intentionally omitted.
+    domain: 127.0.0.1
+  analytics:
+    reporting_enabled: false
+    check_for_updates: false
+  auth.anonymous:
+    enabled: false
+  auth.basic:
+    enabled: true
+  auth:
+    disable_login_form: false
+  security:
+    admin_user: admin
+    # admin_password supplied via GF_SECURITY_ADMIN_PASSWORD env (grafana-admin Secret).
+  users:
+    auto_assign_org_role: Viewer
+  log:
+    mode: console
+  log.console:
+    format: json
+  database:
+    type: postgres
+    host: grafana-pg-rw.lgtm.svc.cluster.local:5432
+    name: grafana
+    user: grafana
+    ssl_mode: require
+    # GF_DATABASE_PASSWORD injected from env below (grafana-pg-app Secret).
+  unified_alerting:
+    enabled: true
+    ha_listen_address: "${POD_IP}:9094"
+    ha_advertise_address: "${POD_IP}:9094"
+    ha_peers: "grafana-headless:9094"
+  unified_alerting.state_history:
+    enabled: false
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        uid: PBFA97CFB590B2093
+        access: proxy
+        # /prometheus route-prefix is MANDATORY — the server runs with
+        # --web.route-prefix=/prometheus; omitting it 404s every query.
+        url: http://prometheus-server.lgtm.svc.cluster.local/prometheus
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          prometheusType: Prometheus
+          timeInterval: 30s
+      - name: Loki
+        type: loki
+        uid: P8E80F9AEF21F6940
+        access: proxy
+        # loki-gateway nginx routes query paths to loki-read (there is NO bare `loki`
+        # svc in the distributed chart). Port 80. Fixes the empty-in-Grafana read path.
+        url: http://loki-gateway.lgtm.svc.cluster.local
+        isDefault: false
+        jsonData:
+          maxLines: 1000
+      - name: Tempo
+        type: tempo
+        uid: P214B5B846CF3925F
+        access: proxy
+        url: http://tempo.lgtm.svc.cluster.local:3200
+        isDefault: false
+        jsonData:
+          httpMethod: GET
+          tracesToLogsV2:
+            datasourceUid: P8E80F9AEF21F6940
+            spanStartTimeShift: -1h
+            spanEndTimeShift: 1h
+            filterByTraceID: true
+            filterBySpanID: false
+          tracesToMetrics:
+            datasourceUid: PBFA97CFB590B2093
+            spanStartTimeShift: -1h
+            spanEndTimeShift: 1h
+          serviceMap:
+            datasourceUid: PBFA97CFB590B2093
+          nodeGraph:
+            enabled: true
+
+# Two parallel dashboard loaders: gnetId chart downloads + ConfigMap sidecar.
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: default
+        orgId: 1
+        folder: ""
+        type: file
+        disableDeletion: false
+        allowUiUpdates: true
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/default
+
+# gnetId dashboards: the in-scope set only (cluster health, networking, cilium,
+# LGTM self-monitoring, otel, litellm). Vector-database and workstation-VPN boards
+# are out of scope and intentionally not provisioned.
+dashboards:
+  default:
+    k8s-views-global:
+      gnetId: 15757
+      revision: 43
+      datasource: Prometheus
+    k8s-views-namespaces:
+      gnetId: 15758
+      revision: 42
+      datasource: Prometheus
+    k8s-views-nodes:
+      gnetId: 15759
+      revision: 35
+      datasource: Prometheus
+    k8s-views-pods:
+      gnetId: 15760
+      revision: 36
+      datasource: Prometheus
+    node-exporter-full:
+      gnetId: 1860
+      revision: 41
+      datasource: Prometheus
+    coredns:
+      gnetId: 15762
+      revision: 19
+      datasource: Prometheus
+    cilium-agent:
+      gnetId: 16611
+      revision: 1
+      datasource: Prometheus
+    cilium-operator:
+      gnetId: 16613
+      revision: 1
+      datasource: Prometheus
+    cilium-hubble:
+      gnetId: 16612
+      revision: 1
+      datasource: Prometheus
+    prometheus-overview:
+      gnetId: 19268
+      revision: 1
+      datasource: Prometheus
+    otel-collector:
+      gnetId: 15983
+      revision: 4
+      datasource: Prometheus
+    litellm:
+      gnetId: 24965
+      revision: 1
+      datasource: Prometheus
+
+# ConfigMap sidecar picks up the hand-rolled JSON dashboards (label
+# grafana_dashboard=1) from the lgtm namespace.
+sidecar:
+  dashboards:
+    enabled: true
+    label: grafana_dashboard
+    labelValue: "1"
+    searchNamespace: lgtm
+    folder: /tmp/dashboards
+    provider:
+      allowUiUpdates: true
+  datasources:
+    enabled: false
+
+# Persistence is not needed: state lives in the CNPG-backed Postgres database,
+# so both replicas share consistent dashboards/users/annotations.
+persistence:
+  enabled: false
+
+# type=LoadBalancer with a Cilium-pinned VIP from the lima-shared-pool. The Mac is
+# on the same 192.168.105.0/24 L2, so Grafana is reachable DIRECTLY at
+# http://192.168.105.202:3000 — no port-forward (D005 / ha-networking.md §4). The
+# grafana chart renders loadBalancerClass + externalTrafficPolicy natively, so no
+# kustomize patch is needed here. `port-forward:grafana` stays a non-HA loopback fallback.
+service:
+  enabled: true
+  type: LoadBalancer
+  port: 3000
+  # io.cilium/l2-announcer ensures Cilium (not another controller) owns this LB.
+  loadBalancerClass: io.cilium/l2-announcer
+  # Cluster (NOT Local) is required for L2-announced services (ha-networking.md §10).
+  externalTrafficPolicy: Cluster
+  annotations:
+    # Cilium LB-IPAM fixed VIP. Correct key is `lbipam.cilium.io/ips`.
+    lbipam.cilium.io/ips: 192.168.105.202
+
+testFramework:
+  enabled: false
+
+rbac:
+  create: true
+  namespaced: true
+
+serviceAccount:
+  create: true

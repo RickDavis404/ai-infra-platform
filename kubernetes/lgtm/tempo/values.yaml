@@ -1,0 +1,125 @@
+# tempo/tempo 2.2.3 (grafana-community.github.io/helm-charts) — single-binary.
+# Traces store for the LGTM plane. Documented HA exception (single replica):
+# data durability across a node loss comes from SeaweedFS S3 + reschedule, not
+# zero-downtime read availability. See README.
+
+tempo:
+  # Anonymous usage reporting off for the local lab.
+  reportingEnabled: false
+
+  # Enable env-var expansion so S3 credentials come from a Secret (env), never a
+  # committed literal.
+  extraArgs:
+    config.expand-env: "true"
+
+  # SeaweedFS S3 credentials, mirrored into lgtm as the tempo-s3-creds Secret
+  # (keys SEAWEEDFS_S3_ACCESS_KEY / SEAWEEDFS_S3_SECRET_KEY).
+  extraEnvFrom:
+    - secretRef:
+        name: tempo-s3-creds
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 6Gi
+
+  server:
+    http_listen_port: 3200
+
+  # Trace storage on SeaweedFS S3 (filer embedded S3 :8333). insecure: true since
+  # the endpoint is plain http; forcepathstyle for SeaweedFS path-style addressing.
+  storage:
+    trace:
+      backend: s3
+      s3:
+        bucket: tempo-traces
+        endpoint: langfuse-seaweedfs-s3.langfuse-data.svc.cluster.local:8333
+        access_key: "${SEAWEEDFS_S3_ACCESS_KEY}"
+        secret_key: "${SEAWEEDFS_S3_SECRET_KEY}"
+        insecure: true
+        forcepathstyle: true
+      wal:
+        path: /var/tempo/wal
+
+  # WAL replay takes ~90s; readiness must not declare Ready before replay completes
+  # or the pod serves 503s. Liveness gets the same headroom.
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 3200
+    initialDelaySeconds: 90
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+  livenessProbe:
+    httpGet:
+      path: /ready
+      port: 3200
+    initialDelaySeconds: 90
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+  # Metrics-generator: local-blocks (service-graph + span-metrics drive the
+  # service map / RED metrics), remote-writing the generated series to Prometheus
+  # via its remote-write receiver (/prometheus/api/v1/write route-prefix).
+  metricsGenerator:
+    enabled: true
+    remoteWriteUrl: http://prometheus-server.lgtm.svc.cluster.local/prometheus/api/v1/write
+    processor:
+      local_blocks:
+        flush_to_storage: true
+      service_graphs:
+        wait: 10s
+        max_items: 10000
+      span_metrics:
+        enable_target_info: true
+    registry:
+      collection_interval: 15s
+      external_labels:
+        source: tempo
+    storage:
+      path: /var/tempo/generator/wal
+    traces_storage:
+      path: /var/tempo/generator/traces
+
+  # 7-day block retention (compactor.compaction.block_retention).
+  retention: 168h
+
+  # Defaults applied to all tenants: activate the metrics generator and raise the
+  # max bytes per trace to 64 MiB (67108864) to match the 64 MiB pipeline ceilings.
+  overrides:
+    defaults:
+      global:
+        max_bytes_per_trace: 67108864
+      metrics_generator:
+        processors:
+          - local-blocks
+          - service-graphs
+          - span-metrics
+
+# Single replica (HA exception). Persistent WAL on local-path.
+replicas: 1
+
+persistence:
+  enabled: true
+  storageClassName: local-path
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+
+serviceAccount:
+  create: true
+
+# Tempo-query sidecar (Jaeger UI shim) not needed — Grafana is the trace UI.
+tempoQuery:
+  enabled: false
+
+# Emit a ServiceMonitor for Tempo's own metrics. Alloy discovers all
+# ServiceMonitors cluster-wide (no label selector), so no extra labels are needed.
+serviceMonitor:
+  enabled: true

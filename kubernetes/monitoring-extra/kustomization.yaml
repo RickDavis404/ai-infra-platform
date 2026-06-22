@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# monitoring-extra — HAND-WRITTEN ServiceMonitor / PodMonitor objects for the
+# metrics targets that have NO chart-emitted ServiceMonitor.
+#
+# These close the gap left when v7 migrated metrics from the Prometheus chart's
+# static `extraScrapeConfigs` to the SM/PM model: Grafana Alloy
+# (kubernetes/lgtm/alloy) runs prometheus.operator.{servicemonitors,podmonitors}
+# with NO label selector, discovering EVERY SM/PM cluster-wide, so the objects
+# here need no special discovery label — Alloy scrapes them and remote-writes to
+# the Prometheus server.
+#
+# Type choice per target (see each file's header for the full rationale):
+#   - ServiceMonitor  — HTTPS targets needing the Alloy pod's auto-renewing
+#     projected ServiceAccount token via `bearerTokenFile` (a ServiceMonitor-ONLY
+#     field; the PodMonitor CRD has none): kube-apiserver, kubelet+cAdvisor,
+#     kube-scheduler, kube-controller-manager.
+#   - PodMonitor      — plain-HTTP / unauthenticated targets selected by pod
+#     label: etcd (:2381), kube-vip (:2112), hubble-relay (:9966),
+#     litellm (:4000 /metrics/), clickhouse-keeper (:7000).
+#
+# These objects are CLUSTER-WIDE in effect but live in the namespace of the thing
+# they scrape (kube-system / default / litellm / langfuse-data). kustomize does
+# NOT set a single `namespace:` here because the objects span namespaces; each
+# object pins its own metadata.namespace + namespaceSelector.
+#
+# APPLY ORDER (k8s:apply): applied AFTER monitoring-crds (so the SM/PM kinds are
+# registered) and AFTER namespaces (so litellm/langfuse-data exist). The kubelet
+# Service it ships is selector-LESS; k8s:apply syncs that Service's EndpointSlice
+# from the live node InternalIPs immediately after applying this overlay (node
+# IPs are DHCP-assigned, so they cannot be committed here). The scheduler /
+# controller-manager Services are selector-BASED (their static pods are real
+# pods), so the built-in endpoints controller populates those automatically.
+resources:
+  # --- ServiceMonitors (HTTPS + bearer) ---
+  - kube-apiserver-servicemonitor.yaml
+  - kubelet-service.yaml
+  - kubelet-servicemonitor.yaml
+  - kube-scheduler.yaml
+  - kube-controller-manager.yaml
+  # --- PodMonitors (plain HTTP) ---
+  - etcd-podmonitor.yaml
+  - kube-vip-podmonitor.yaml
+  - hubble-relay-podmonitor.yaml
+  - litellm-podmonitor.yaml
+  - clickhouse-keeper-podmonitor.yaml

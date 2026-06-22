@@ -1,0 +1,41 @@
+# Headless `kubelet` Service (kube-system) — scrape entrypoint for kubelet +
+# cAdvisor metrics (:10250 /metrics and /metrics/cadvisor, HTTPS).
+#
+# The kubelet is a HOST PROCESS, not a pod, so no PodMonitor can reach it and no
+# label selector resolves to it. The canonical prometheus-operator pattern is a
+# selector-less `kubelet` Service in kube-system whose Endpoints/EndpointSlice
+# point at every node's InternalIP:10250 — the operator's built-in endpoints
+# controller syncs them. This platform runs NO operator (Alloy consumes the
+# SM/PM CRDs directly), so the endpoint sync is done by k8s:apply instead: after
+# this overlay is applied, apply.sh writes an EndpointSlice for this Service from
+# the live `kubectl get nodes` InternalIPs (node IPs are DHCP-assigned on the
+# socket_vmnet L2, so they cannot be hard-coded here). The Service is
+# clusterIP: None (headless) and selector-less; its EndpointSlice is owned by
+# apply.sh, not by any selector.
+#
+# The companion ServiceMonitor (kubelet-servicemonitor.yaml) selects this Service
+# by the app.kubernetes.io/name=kubelet label and scrapes both the kubelet and
+# cAdvisor paths over HTTPS with the Alloy SA bearer token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubelet
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kubelet
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+    # k8s-app is the conventional label kube-prometheus uses on the kubelet
+    # Service; kept for parity with upstream dashboards/queries.
+    k8s-app: kubelet
+spec:
+  type: ClusterIP
+  clusterIP: None
+  # No selector: the backing endpoints are node kubelets (host processes), synced
+  # into an EndpointSlice by k8s:apply (see apply.sh). A selector here would make
+  # the endpoints controller clobber that slice with an empty set.
+  ports:
+    - name: https-metrics
+      port: 10250
+      targetPort: 10250
+      protocol: TCP

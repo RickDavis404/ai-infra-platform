@@ -1,0 +1,70 @@
+# kube-scheduler metrics — headless Service (selector-based) + ServiceMonitor
+# (:10259 /metrics, HTTPS + bearer token).
+#
+# kube-scheduler runs as a kubeadm hostNetwork static pod (mirror name
+# kube-scheduler-<node>, ns kube-system) labelled `component: kube-scheduler` +
+# `tier: control-plane`. Unlike the kubelet (a host process with no pod), the
+# scheduler IS a pod, so a SELECTOR-based Service auto-populates its Endpoints via
+# the built-in endpoints controller — no manual endpoint sync needed. The Service
+# selects `component: kube-scheduler` and exposes targetPort 10259; selected pods
+# back the endpoint even though the static pod declares no containerPort (the
+# endpoints controller keys off the selector + targetPort, not a named port).
+#
+# WHY ServiceMonitor (not PodMonitor): the HTTPS scrape needs the Alloy pod's
+# auto-renewing projected SA token via `bearerTokenFile`, which exists ONLY on
+# ServiceMonitor. The secure port :10259 binds 0.0.0.0 ONLY once the kubeadm
+# ClusterConfiguration sets `scheduler.extraArgs bind-address=0.0.0.0` (default
+# 127.0.0.1 — see lima/templates/k8s-cilium.yaml); it stays TLS + RBAC-gated.
+# insecureSkipVerify: the serving cert is not signed for the endpoint IP.
+# Discovered cluster-wide by Alloy. Replaces the prometheus-server
+# `kube-scheduler` static scrape job.
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-scheduler-metrics
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-scheduler
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    component: kube-scheduler
+  ports:
+    - name: https-metrics
+      port: 10259
+      targetPort: 10259
+      protocol: TCP
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-scheduler
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-scheduler
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-scheduler
+  endpoints:
+    - port: https-metrics
+      scheme: https
+      path: /metrics
+      interval: 30s
+      honorLabels: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

@@ -1,0 +1,54 @@
+# PodMonitor — control-plane etcd (:2381 /metrics, plain HTTP).
+#
+# Stacked etcd runs as a kubeadm hostNetwork static pod (mirror name etcd-<node>,
+# ns kube-system) on every control-plane node. kubeadm stamps its mirror pod with
+# `component: etcd` + `tier: control-plane`; we select on `component: etcd`.
+#
+# etcd serves metrics over PLAIN HTTP on :2381 ONLY once the kubeadm
+# ClusterConfiguration sets `etcd.local.extraArgs listen-metrics-urls=
+# http://0.0.0.0:2381` (default http://127.0.0.1:2381 — unreachable from an
+# in-cluster scraper). That flag is set in lima/templates/k8s-cilium.yaml. The
+# :2381 listener is metrics-only and carries NO client/peer data, so scraping it
+# unauthenticated over HTTP is safe (the client/peer ports stay mTLS-gated).
+#
+# PORT HANDLING (load-bearing): the kubeadm etcd static pod declares NO
+# containerPort for :2381. A PodMonitor with a numeric `targetPort` expands into a
+# `keep` relabel rule on the pod's DECLARED container ports, so it would match
+# nothing. Instead this endpoint declares NO port and rewrites `__address__` to
+# the pod IP + 2381 via relabeling (the documented prometheus-operator workaround
+# for undeclared ports). etcd is a single-container hostNetwork pod, so exactly
+# one target per pod is produced (no duplicate-target risk). hostNetwork -> pod IP
+# is the node IP. Discovered cluster-wide by Alloy's
+# prometheus.operator.podmonitors. Replaces the prometheus-server `etcd` job.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kube-etcd
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-etcd
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      component: etcd
+  podMetricsEndpoints:
+    # No `port`/`targetPort`: the static pod declares no :2381 containerPort, so a
+    # numeric port filter would drop every target. Rewrite the scrape address to
+    # the pod IP : 2381 instead.
+    - path: /metrics
+      scheme: http
+      interval: 30s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          targetLabel: __address__
+          replacement: "$1:2381"
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
