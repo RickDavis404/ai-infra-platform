@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: lgtm
+
+# LGTM observability plane (namespace lgtm). Each component is its own kustomize
+# base inlining a pinned Helm chart (or raw ConfigMaps for dashboards), assembled
+# with `kustomize build --enable-helm kubernetes/lgtm`.
+resources:
+  - otel-collector
+  - prometheus
+  - alloy
+  - grafana
+  - loki
+  - tempo
+  - dashboards

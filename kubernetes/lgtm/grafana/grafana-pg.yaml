@@ -1,0 +1,63 @@
+# grafana-pg.yaml — CloudNativePG Cluster backing Grafana's database (ns lgtm).
+#
+# Grafana's database holds only RECONSTRUCTIBLE UI state: users, org settings,
+# annotations, and alerting state. Dashboards and datasources are FILE-PROVISIONED
+# (values + sidecar ConfigMaps in ../grafana/values.yaml), so nothing here is the
+# system of record. That is why this cluster runs a DELIBERATELY LIGHTER footprint
+# than the app data-plane databases: instances 2 (primary + 1 async standby) and
+# NO synchronous-replication block — versus the 3-instance quorum-synchronous
+# langfuse-pg / litellm-pg clusters whose data is authoritative and must not be
+# lost. A node loss reschedules the standby (or re-clones from the primary); the
+# small window of async lag only risks UI state that Grafana re-derives anyway.
+#
+# Grafana consumes:
+#   - host  grafana-pg-rw.lgtm.svc.cluster.local:5432  (the CNPG -rw primary Service)
+#   - the grafana-pg-app Secret key `password` (GF_DATABASE_PASSWORD, see ../grafana/
+#     values.yaml `envValueFrom`). The CNPG operator adopts the pre-created
+#     username+password from grafana-pg-app and also mints a `uri` key onto it.
+#
+# OPERATOR-BEFORE-CR: the CloudNativePG operator (kubernetes/operators/cnpg, the
+# postgresql.cnpg.io CRDs) MUST be applied and Ready before this Cluster CR. See
+# README.md "CNPG-backed database (dependency)".
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: grafana-pg
+  namespace: lgtm
+spec:
+  # 2 = primary + 1 async standby (lighter than the 3-instance app DBs on purpose;
+  # see the header — Grafana's DB is reconstructible UI state, not a store of record).
+  instances: 2
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:233d7414ff5c1e4951e85389fb4bec31c18f35be1d7d47eea5aa296a46af0b5f
+  # Pinned tag: skip the re-pull on idempotent re-apply so repeated runs don't hit
+  # the registry's anonymous pull-rate limit (HTTP 429).
+  imagePullPolicy: IfNotPresent
+  primaryUpdateStrategy: unsupervised
+  postgresql:
+    parameters:
+      timezone: UTC # keep UTC platform-wide for consistent timestamps
+    # NOTE: no `synchronous` block. Async replication is intentional for this DB —
+    # quorum-sync (as on langfuse-pg / litellm-pg) would need a 3rd instance and is
+    # not warranted for reconstructible UI state.
+  bootstrap:
+    initdb:
+      database: grafana
+      owner: grafana
+      secret: { name: grafana-pg-app } # provides username + password keys (fnox+age)
+  storage:
+    storageClass: local-path
+    size: 5Gi
+  affinity:
+    enablePodAntiAffinity: true
+    topologyKey: kubernetes.io/hostname
+    podAntiAffinityType: required # spread the 2 instances across distinct nodes
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  monitoring:
+    enablePodMonitor: true # CNPG operator emits a PodMonitor (:9187 /metrics); Alloy discovers all PodMonitors cluster-wide
+  inheritedMetadata:
+    annotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "9187"
+      prometheus.io/path: /metrics

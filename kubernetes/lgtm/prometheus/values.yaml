@@ -1,0 +1,134 @@
+# Prometheus — standalone (prometheus-community/prometheus 29.13.1), namespace lgtm.
+# StatefulSet, 1 replica, served under /prometheus.
+# Rendered via `kustomize build --enable-helm`.
+#
+# REPLICA COUNT (lab right-sizing): a single replica. The prior 2-replica
+# "redundant independent scrapers" model doubled the remote_write intake and, more
+# importantly, gave Alloy's remote_write TWO independent receivers behind one
+# Service — writes round-robined across replicas with independent clocks, so each
+# replica saw gaps/reorderings and rejected samples as `out of order` while the
+# WAL churned. One replica is a single clean remote_write sink. Trade-off: no
+# Prometheus redundancy (a node loss takes metrics down until reschedule) — fully
+# acceptable for a local single-host lab, and far lighter on CPU. No cross-replica
+# dedup was ever in scope (Thanos/Mimir out of scope).
+#
+# SCRAPE OWNERSHIP (metrics migration): Prometheus no longer scrapes the cluster
+# itself. Grafana Alloy (kubernetes/lgtm/alloy) discovers ALL ServiceMonitors and
+# PodMonitors cluster-wide and remote-writes the samples here. The previous
+# `extraScrapeConfigs` block (annotation/static scrape jobs) has been REMOVED to
+# prevent a double-scrape — every former job is now expressed as a ServiceMonitor
+# or PodMonitor consumed by Alloy. Prometheus is reduced to: remote-write intake,
+# storage/retention, query/UI, and a single self-scrape job. node-exporter and
+# kube-state-metrics subcharts stay enabled here (their metrics are surfaced to
+# Alloy via the ServiceMonitors those subcharts ship).
+
+server:
+  # StatefulSet so the replica owns a stable PVC (a Deployment cannot). Kept as a
+  # StatefulSet even at 1 replica so the PVC binding/identity is unchanged if the
+  # count is ever raised again.
+  statefulSet:
+    enabled: true
+  replicaCount: 1
+  # Anti-affinity kept (harmless at 1 replica) so a future scale-up still spreads
+  # replicas across nodes.
+  podAntiAffinity: hard
+  podAntiAffinityTopologyKey: kubernetes.io/hostname
+
+  retention: 7d
+
+  # The /prometheus route-prefix gotcha (§6.3.7): prefixURL rewrites generated
+  # links/asset paths; routePrefix serves the API + UI under /prometheus. Both
+  # MUST be set, or probe paths and panels 404. The self-scrape metrics_path is
+  # moved under /prometheus in scrapeConfigs.prometheus below.
+  prefixURL: /prometheus
+  baseURL: /prometheus
+  routePrefix: /prometheus
+
+  extraFlags:
+  - web.enable-lifecycle
+  # remote-write receiver is required: the OTel Collector's prometheusremotewrite
+  # exporter and Tempo's metrics-generator push to it.
+  - web.enable-remote-write-receiver
+  - log.format=json
+
+  persistentVolume:
+    enabled: true
+    storageClass: local-path
+    size: 10Gi
+    accessModes:
+    - ReadWriteOnce
+
+  # Liveness/readiness probe paths must be under the route-prefix or the pod never
+  # goes Ready.
+  probePath: /prometheus/-/ready
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+# Alertmanager and pushgateway are out of scope for the local lab.
+alertmanager:
+  enabled: false
+prometheus-pushgateway:
+  enabled: false
+
+# Node-level and cluster-object metrics stay on. Each subchart additionally ships a
+# ServiceMonitor (prometheus.monitor.enabled) so Grafana Alloy — which discovers ALL
+# ServiceMonitors cluster-wide — scrapes them and remote-writes the samples back
+# here. Without these flags the subcharts emit NO ServiceMonitor, and node/cluster
+# metrics would silently disappear once the old extraScrapeConfigs were removed.
+prometheus-node-exporter:
+  enabled: true
+  prometheus:
+    monitor:
+      enabled: true
+kube-state-metrics:
+  enabled: true
+  prometheus:
+    monitor:
+      enabled: true
+
+# Self-scrape job: the route-prefix moves Prometheus's own /metrics under
+# /prometheus, so the bundled self-scrape config must use the prefixed path
+# (otherwise the self target 404s). We OVERRIDE the chart's built-in
+# `scrapeConfigs.prometheus` IN PLACE (same `prometheus` key) rather than adding a
+# second `prometheus` job via serverFiles/extraScrapeConfigs — two jobs with the
+# same name make Prometheus refuse to load its config ("found multiple scrape
+# configs with job name \"prometheus\"") and the server CrashLoops.
+scrapeConfigs:
+  prometheus:
+    enabled: true
+    metrics_path: /prometheus/metrics
+    static_configs:
+    - targets:
+      - localhost:9090
+  # Disable EVERY chart-default in-cluster discovery/scrape job. Prometheus no
+  # longer scrapes the cluster itself — Grafana Alloy discovers ALL
+  # ServiceMonitors/PodMonitors cluster-wide and remote-writes the samples here, so
+  # any of these jobs left on would DOUBLE-SCRAPE: kubernetes-api-servers duplicates
+  # the kube-apiserver ServiceMonitor, kubernetes-nodes{,-cadvisor} the kubelet +
+  # cAdvisor ServiceMonitor, and the service-endpoints/pods/services annotation jobs
+  # re-discover everything Alloy already covers. The chart ships all of these
+  # `enabled: true` by default (prometheus-29.13.1/values.yaml), so each must be
+  # turned off explicitly. Only the self-scrape `prometheus` job above stays on.
+  kubernetes-api-servers:
+    enabled: false
+  kubernetes-nodes:
+    enabled: false
+  kubernetes-nodes-cadvisor:
+    enabled: false
+  kubernetes-service-endpoints:
+    enabled: false
+  kubernetes-service-endpoints-slow:
+    enabled: false
+  prometheus-pushgateway:
+    enabled: false
+  kubernetes-services:
+    enabled: false
+  kubernetes-pods:
+    enabled: false
+  kubernetes-pods-slow:
+    enabled: false

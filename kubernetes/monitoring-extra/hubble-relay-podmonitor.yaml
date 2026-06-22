@@ -1,0 +1,43 @@
+# PodMonitor — Hubble Relay (:9966 /metrics, plain HTTP).
+#
+# Hubble Relay is installed out-of-band by the Cilium chart (k8s:cilium task, ns
+# kube-system) — it is NOT part of any kustomize overlay, and the Cilium values
+# set `prometheus.serviceMonitor.enabled: false`, so Relay has no chart-emitted
+# ServiceMonitor. Its relay-metrics listener is :9966 (Cilium values
+# hubble.relay.prometheus.enabled: true). The relay pods carry the chart label
+# `k8s-app: hubble-relay`. No auth — plain HTTP metrics port.
+#
+# A PodMonitor (not ServiceMonitor) keeps the producer label-free and avoids
+# depending on the chart's relay Service shape. When
+# hubble.relay.prometheus.enabled=true (set in kubernetes/cilium/values.yaml) the
+# relay container declares a NAMED container port `prometheus` (containerPort
+# 9966), so the endpoint references it BY NAME — a numeric PodMonitor port would
+# expand into a `keep` filter on declared container ports, which a named port
+# satisfies cleanly. Discovered cluster-wide by Alloy's
+# prometheus.operator.podmonitors. Replaces the prometheus-server `hubble-relay`
+# scrape job.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: hubble-relay
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hubble-relay
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: cilium-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      k8s-app: hubble-relay
+  podMetricsEndpoints:
+    - port: prometheus
+      path: /metrics
+      scheme: http
+      interval: 30s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

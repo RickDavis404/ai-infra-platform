@@ -1,0 +1,61 @@
+# ServiceMonitor — kubelet + cAdvisor (:10250, HTTPS + bearer token).
+#
+# Selects the headless `kubelet` Service (kubelet-service.yaml) whose
+# EndpointSlice k8s:apply syncs to every node's InternalIP:10250. Two endpoints:
+#   1. /metrics          — kubelet's own metrics.
+#   2. /metrics/cadvisor — per-container cAdvisor metrics.
+# Both scrape over HTTPS with the Alloy pod's auto-renewing projected
+# ServiceAccount token (bearerTokenFile — ServiceMonitor-only; the PodMonitor CRD
+# has no such field). insecureSkipVerify because the kubelet serving cert is
+# signed for the node name, not the headless ClusterIP/endpoint IP. Alloy's RBAC
+# already grants nodes/metrics + the /metrics nonResourceURL
+# (kubernetes/lgtm/alloy/values.yaml). Mirrors kube-prometheus's kubelet
+# ServiceMonitor (honorLabels, metrics_path relabel). Discovered cluster-wide by
+# Alloy's prometheus.operator.servicemonitors (no discovery label needed).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kubelet
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kubelet
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - kube-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubelet
+  endpoints:
+    # kubelet self-metrics.
+    - port: https-metrics
+      scheme: https
+      path: /metrics
+      interval: 30s
+      honorLabels: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+      relabelings:
+        # Preserve the metrics path as a label (kube-prometheus convention).
+        - sourceLabels: [__metrics_path__]
+          targetLabel: metrics_path
+        - sourceLabels: [__meta_kubernetes_endpoint_node_name]
+          targetLabel: node
+    # cAdvisor container metrics.
+    - port: https-metrics
+      scheme: https
+      path: /metrics/cadvisor
+      interval: 30s
+      honorLabels: true
+      honorTimestamps: false
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        insecureSkipVerify: true
+      relabelings:
+        - sourceLabels: [__metrics_path__]
+          targetLabel: metrics_path
+        - sourceLabels: [__meta_kubernetes_endpoint_node_name]
+          targetLabel: node

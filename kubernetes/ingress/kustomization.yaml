@@ -1,0 +1,17 @@
+# kubernetes/ingress/kustomization.yaml
+#
+# Host access is now via fixed Cilium LB-IPAM service VIPs on the shared
+# 192.168.105.0/24 L2 — reachable DIRECTLY from the Mac, no port-forward (D005 /
+# ha-networking.md §4). Each app exposes its own type=LoadBalancer Service IN its
+# own component (LiteLLM .200, Langfuse-web .201, Grafana .202, OTel OTLP .203).
+#
+# This base owns ONLY the Hubble UI host VIP (.204): the Hubble UI lives in
+# kube-system as part of the Cilium install (kubernetes/cilium/, owned by B1 and not
+# edited here), so its host-facing LoadBalancer is added here as an additive
+# Service (`hubble-ui-lb`) selecting the existing hubble-ui pods. See README.md for
+# the full host-access VIP map and the port-forward (non-HA) fallback.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - hubble-ui-lb.yaml

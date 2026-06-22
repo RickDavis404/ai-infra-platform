@@ -1,0 +1,45 @@
+# ServiceMonitor — kube-apiserver (:443 /metrics, HTTPS + bearer token).
+#
+# The apiserver is the ONE control-plane component that already has a real,
+# endpoint-backed Service: the `kubernetes` Service in the `default` namespace,
+# whose Endpoints kubeadm/the apiserver keep pointed at the live apiserver
+# instances. So no Service/Endpoints need to be created here — this ServiceMonitor
+# simply selects that Service (labels component=apiserver, provider=kubernetes).
+#
+# WHY ServiceMonitor (not PodMonitor): the secure scrape needs the Alloy pod's
+# auto-renewing projected ServiceAccount token, supplied via `bearerTokenFile`.
+# That field exists ONLY on ServiceMonitor — the PodMonitor CRD has no
+# bearerTokenFile — so every HTTPS+bearer control-plane target in this overlay is
+# a ServiceMonitor. Alloy's prometheus.operator.servicemonitors honours
+# bearerTokenFile (grafana/agent#4099 / PR#4118): it reads the path from the Alloy
+# pod's own filesystem, so the token auto-renews and no Secret is pre-created.
+#
+# TLS: verify against the cluster CA (mounted in the Alloy pod) with serverName
+# `kubernetes` (the apiserver cert's SAN). Mirrors kube-prometheus's apiserver
+# ServiceMonitor. Discovered cluster-wide by Alloy (no discovery label needed).
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: kube-apiserver
+  namespace: default
+  labels:
+    app.kubernetes.io/name: kube-apiserver
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: control-plane-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - default
+  selector:
+    matchLabels:
+      component: apiserver
+      provider: kubernetes
+  endpoints:
+    - port: https
+      scheme: https
+      interval: 30s
+      honorLabels: true
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        caFile: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        serverName: kubernetes

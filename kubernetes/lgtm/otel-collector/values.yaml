@@ -1,0 +1,275 @@
+# OpenTelemetry Collector — in-cluster OTLP gateway (§13.2.1).
+# Chart: open-telemetry/opentelemetry-collector 0.159.2, releaseName otel-collector,
+# namespace lgtm. Rendered via `kustomize build --enable-helm`.
+#
+# Role split (§13.2): THIS collector is the single OTLP gateway for every
+# app-emitted signal AND the general container-log path (the `filelog` receiver).
+# Alloy is meta-observability only (the collector's own pod logs). Do not move the
+# general log path off this collector.
+
+# DaemonSet: one collector per node (§13.2.1).
+mode: daemonset
+
+# Contrib distribution — REQUIRED: this config uses the prometheusremotewrite
+# exporter plus the transform/filter/deltatocumulative processors, none of which
+# ship in the slimmer `otel/opentelemetry-collector-k8s` image (that image only
+# carries otlp/otlphttp/debug/... exporters, so it fails to start with
+# `exporters unknown type: "prometheusremotewrite"`). The contrib image IS published
+# on Docker Hub at the chart's appVersion (0.155.0 confirmed present), so pin to it.
+# chart 0.159.2's appVersion is only 0.154.0, so an explicit tag is REQUIRED to run
+# the newer 0.155.0 contrib image.
+image:
+  repository: otel/opentelemetry-collector-contrib
+  pullPolicy: IfNotPresent
+  tag: "0.155.0"
+
+# Presets wire in the filelog receiver (general container-log tail) and the
+# k8sattributes processor RBAC + plumbing. `includeCollectorLogs: false` — the
+# collector's own logs go via Alloy (§13.2.3), not back through itself.
+presets:
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: false
+    storeCheckpoints: true
+  kubernetesAttributes:
+    enabled: true
+
+# Service ports — plain OTLP. No `/otel` prefix (it was a remote-Ingress artifact,
+# dropped for v7); clients post to `/v1/{traces,metrics,logs}` on :4318.
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    servicePort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    servicePort: 4318
+    protocol: TCP
+  # The collector's own internal-telemetry metrics endpoint (:8888). It is disabled
+  # by default and MUST be enabled for the ServiceMonitor below to have a port to
+  # scrape — serviceMonitor.metricsEndpoints defaults to this `metrics` port.
+  metrics:
+    enabled: true
+    containerPort: 8888
+    servicePort: 8888
+    protocol: TCP
+
+# For mode=daemonset the chart disables the Service by default
+# (serviceEnabled=false), and the ServiceMonitor template only renders when a
+# Service exists. Explicitly enable the Service so the collector's :8888 metrics
+# port (and the OTLP ports) are fronted by a ClusterIP Service the ServiceMonitor
+# can select. internalTrafficPolicy defaults to Local for a daemonset Service,
+# which keeps OTLP traffic node-local — fine here.
+service:
+  enabled: true
+
+# Emit a ServiceMonitor scraping the collector's own metrics (:8888 above). Alloy
+# discovers all ServiceMonitors cluster-wide (no label selector), so no extra
+# labels are required on the producer side.
+serviceMonitor:
+  enabled: true
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+# filelog checkpoint storage. MUST be hostPath, not a PVC: this collector runs as a
+# DaemonSet (one pod per node), and a single ReadWriteOnce local-path PVC binds to
+# exactly ONE node's PV — the pods on the other nodes then fail to schedule
+# ("didn't match PersistentVolume's node affinity") and stay Pending forever. A
+# hostPath gives each node its own on-disk checkpoint dir, so file-offset
+# checkpoints still survive pod restarts (no re-tail-from-beginning storms) without
+# cross-node PV contention.
+extraVolumes:
+- name: filelog-checkpoints
+  hostPath:
+    path: /var/lib/otelcol-checkpoints
+    type: DirectoryOrCreate
+extraVolumeMounts:
+- name: filelog-checkpoints
+  mountPath: /var/lib/otelcol/file_storage
+
+# The Langfuse OTLP Basic-auth header is injected from a Secret, never a committed
+# literal (§13.2.1). The value is `Basic <base64(public:secret)>`; the operator
+# mints it into secret `langfuse-otel-basic-auth` (ns lgtm), key
+# `OTEL_EXPORTER_OTLP_LANGFUSE_AUTH`.
+extraEnvs:
+- name: LANGFUSE_OTLP_AUTH_HEADER
+  valueFrom:
+    secretKeyRef:
+      name: langfuse-otel-basic-auth
+      key: OTEL_EXPORTER_OTLP_LANGFUSE_AUTH
+
+config:
+  extensions:
+    # Required by the chart's readiness/liveness probes (the chart asserts the
+    # health_check extension is present when the config is fully overridden).
+    health_check:
+      endpoint: 0.0.0.0:13133
+    # file_storage backs the filelog receiver's checkpoint store.
+    file_storage:
+      directory: /var/lib/otelcol/file_storage
+      timeout: 10s
+
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+          # 64 MiB uniform ceiling (§13.2.4) — raised from the ~4 MiB default to
+          # carry full-capture raw-body records (~1.3 MB peak, ~40x headroom).
+          max_recv_msg_size_mib: 64
+        http:
+          endpoint: 0.0.0.0:4318
+          # 64 MiB = 67108864 bytes. Standard /v1/* paths; no /otel prefix.
+          max_request_body_size: 67108864
+    # The logsCollection preset injects its own `filelog` receiver; this override
+    # makes the general container-log tail explicit: start at the beginning and
+    # persist checkpoints via file_storage.
+    filelog:
+      include:
+      - /var/log/pods/*/*/*.log
+      start_at: beginning
+      storage: file_storage
+      include_file_path: true
+      include_file_name: false
+      retry_on_failure:
+        enabled: true
+      operators:
+      - id: container-parser
+        type: container
+
+  processors:
+    # memory_limiter first in every pipeline: soft-limit 75%, spike 25%.
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 75
+      spike_limit_percentage: 25
+    batch:
+      send_batch_size: 1024
+      timeout: 5s
+    k8sattributes:
+      extract:
+        metadata:
+        - k8s.namespace.name
+        - k8s.pod.name
+        - k8s.pod.uid
+        - k8s.deployment.name
+        - k8s.node.name
+        - k8s.container.name
+        # `extract_all_pod_labels` is NOT a valid k8sattributes field (it makes the
+        # collector fail config validation: `'extract' has invalid keys`). To capture
+        # every pod label, use a labels entry with a catch-all key_regex instead.
+        labels:
+        - tag_name: $$1
+          key_regex: (.*)
+          from: pod
+      pod_association:
+      - sources:
+        - from: resource_attribute
+          name: k8s.pod.uid
+      - sources:
+        - from: connection
+    # Codex emits delta-temporality metrics; Prometheus remote-write needs
+    # cumulative. max_stale drops series idle longer than 30m.
+    deltatocumulative:
+      max_stale: 30m
+    # GenAI OTTL keystone (§13.2.2) — rewrites Claude Code's proprietary span
+    # attributes into OpenTelemetry GenAI semantic conventions so Langfuse can
+    # auto-extract prompts, completions, and token usage. KEEP.
+    transform/claude_code_genai:
+      error_mode: ignore
+      trace_statements:
+      - context: span
+        statements:
+        - set(attributes["gen_ai.prompt.0.content"], attributes["user_prompt"]) where attributes["user_prompt"] != nil
+        - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+        - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+        - set(attributes["gen_ai.usage.cache_read_tokens"], attributes["cache_read_tokens"]) where attributes["cache_read_tokens"] != nil
+        - set(attributes["gen_ai.usage.cache_creation_tokens"], attributes["cache_creation_tokens"]) where attributes["cache_creation_tokens"] != nil
+    # Langfuse should only receive Claude Code spans; drop everything else on the
+    # traces/langfuse pipeline (every trace still reaches Tempo in full).
+    filter/langfuse_only_claude_code:
+      error_mode: ignore
+      traces:
+        span:
+        - resource.attributes["service.name"] != "claude-code"
+
+  exporters:
+    otlphttp/tempo:
+      endpoint: http://tempo.lgtm.svc.cluster.local:4318
+    otlphttp/langfuse:
+      endpoint: http://langfuse-web.langfuse.svc.cluster.local:3000/api/public/otel
+      headers:
+        # Basic-auth header injected from the Secret-backed env var, never a
+        # committed literal (§13.2.1).
+        Authorization: ${env:LANGFUSE_OTLP_AUTH_HEADER}
+    prometheusremotewrite:
+      endpoint: http://prometheus-server.lgtm.svc.cluster.local/prometheus/api/v1/write
+      # Promote host.name / service.name / ai.client.name etc. to Prometheus
+      # labels.
+      resource_to_telemetry_conversion:
+        enabled: true
+      retry_on_failure:
+        enabled: true
+      # Added after a 894-datapoint loss in the source's audit — queue absorbs
+      # remote-write backpressure rather than dropping.
+      remote_write_queue:
+        enabled: true
+        num_consumers: 4
+        queue_size: 5000
+    otlphttp/loki:
+      # The distributed Loki chart exposes NO bare `loki` Service — it creates
+      # loki-gateway / loki-write / loki-read / loki-backend. Pushing to
+      # loki.lgtm.svc.cluster.local:3100 silently black-holed every log line
+      # (zero ingestion). Point at the gateway (nginx, port 80), which fans
+      # /otlp through to the write path. (loki-write:3100/otlp also works; the
+      # gateway is preferred.)
+      endpoint: http://loki-gateway.lgtm.svc.cluster.local/otlp
+    # Basic verbosity on every pipeline for in-cluster diagnosis.
+    debug:
+      verbosity: basic
+
+  service:
+    extensions:
+    - health_check
+    - file_storage
+    pipelines:
+      # Every trace goes to Tempo in full.
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, transform/claude_code_genai, batch]
+        exporters: [otlphttp/tempo, debug]
+      # Claude Code spans (and only those) are fanned to Langfuse.
+      traces/langfuse:
+        receivers: [otlp]
+        processors: [memory_limiter, transform/claude_code_genai, filter/langfuse_only_claude_code, batch]
+        exporters: [otlphttp/langfuse]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, deltatocumulative, batch]
+        exporters: [prometheusremotewrite, debug]
+      logs:
+        receivers: [otlp, filelog]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [otlphttp/loki, debug]
+
+# Per-node checkpoint PVC for the filelog receiver (local-path).
+extraManifests:
+- apiVersion: v1
+  kind: PersistentVolumeClaim
+  metadata:
+    name: otel-collector-filelog-checkpoints
+    namespace: lgtm
+  spec:
+    accessModes:
+    - ReadWriteOnce
+    storageClassName: local-path
+    resources:
+      requests:
+        storage: 2Gi

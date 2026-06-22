@@ -1,0 +1,39 @@
+# Hubble UI host VIP (Cilium L2-announced LoadBalancer).
+#
+# Hubble UI ships as part of the Cilium install in kube-system (owned by B1 under
+# kubernetes/cilium/ — NOT edited here). Cilium's bundled `hubble-ui` Service is
+# ClusterIP. To reach the network-observability UI DIRECTLY from the Mac over the
+# shared 192.168.105.0/24 L2, this base adds a SEPARATE LoadBalancer Service in
+# kube-system that selects the same hubble-ui pods and pins the Cilium LB-IPAM VIP
+# 192.168.105.204 (D005 / ha-networking.md §4). The bundled ClusterIP `hubble-ui`
+# Service is left untouched; this is an additive host-access object named
+# `hubble-ui-lb` to avoid colliding with the chart's Service.
+#
+# The selector matches the standard Cilium hubble-ui pod label `k8s-app: hubble-ui`.
+# The UI listens on container port 8081 (named `http`); the LB exposes :80 -> http.
+# `port-forward:hubble`/`cilium hubble ui` remain non-HA loopback fallbacks.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hubble-ui-lb
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: hubble-ui
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: observability-ui
+  annotations:
+    # Cilium LB-IPAM fixed VIP. Correct key is `lbipam.cilium.io/ips`.
+    lbipam.cilium.io/ips: 192.168.105.204
+spec:
+  type: LoadBalancer
+  # io.cilium/l2-announcer ensures Cilium (not another controller) owns this LB.
+  loadBalancerClass: io.cilium/l2-announcer
+  # Cluster (NOT Local) is required for L2-announced services (ha-networking.md §10).
+  externalTrafficPolicy: Cluster
+  selector:
+    k8s-app: hubble-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

@@ -1,0 +1,59 @@
+# PodMonitor — ClickHouse Keeper (:7000 /metrics, plain HTTP).
+#
+# The Altinity ClickHouseKeeperInstallation `langfuse-keeper` (ns langfuse-data)
+# enables Keeper's native <prometheus> endpoint on :7000 /metrics via
+# spec.configuration.settings prometheus/* (see
+# kubernetes/langfuse-data/clickhouse/keeper.yaml). The CHK operator emits NO
+# ServiceMonitor, so this is a gap target. The Keeper StatefulSet pods carry the
+# operator label `clickhouse-keeper.altinity.com/chk: langfuse-keeper`. No auth —
+# plain HTTP.
+#
+# PORT HANDLING (load-bearing): the Keeper container does NOT declare a :7000
+# containerPort (the prometheus endpoint is enabled purely via config; the pod
+# template in keeper.yaml declares no ports, and the CHK operator injects only its
+# coordination ports — 2181/9181/9234/9444 — never 7000). So a numeric PodMonitor
+# `targetPort: 7000` would expand into a `keep` on declared container ports and
+# match nothing. Instead this endpoint declares NO port and rewrites `__address__`
+# to the pod IP : 7000. To avoid one target PER declared coordination port
+# (duplicate :7000 scrapes), a `keep` rule first pins to the single
+# `clickhouse-keeper` container (a stable name) so exactly one target per pod
+# survives. Discovered cluster-wide by Alloy's prometheus.operator.podmonitors.
+# Replaces the prometheus-server `clickhouse-keeper` job.
+#
+# (The clickhouse-SERVER :9363 endpoint is handled separately — the CHI pods carry
+# prometheus.io/scrape annotations; this overlay covers ONLY the Keeper gap.)
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: clickhouse-keeper
+  namespace: langfuse-data
+  labels:
+    app.kubernetes.io/name: clickhouse-keeper
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: keeper-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - langfuse-data
+  selector:
+    matchLabels:
+      clickhouse-keeper.altinity.com/chk: langfuse-keeper
+  podMetricsEndpoints:
+    - path: /metrics
+      scheme: http
+      interval: 30s
+      honorLabels: true
+      relabelings:
+        # Dedup to a single target per pod: keep only the clickhouse-keeper
+        # container (the pod may carry several declared coordination ports, each
+        # of which would otherwise yield a separate :7000 target).
+        - sourceLabels: [__meta_kubernetes_pod_container_name]
+          regex: clickhouse-keeper
+          action: keep
+        # Rewrite the scrape address to the pod IP : 7000 (the prometheus
+        # endpoint port, which is not a declared containerPort).
+        - sourceLabels: [__meta_kubernetes_pod_ip]
+          targetLabel: __address__
+          replacement: "$1:7000"
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

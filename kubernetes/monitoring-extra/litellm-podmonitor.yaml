@@ -1,0 +1,41 @@
+# PodMonitor — LiteLLM gateway (:4000 /metrics/, plain HTTP).
+#
+# LiteLLM is deployed as RAW manifests (kubernetes/litellm), NOT a chart, so there
+# is no chart-emitted ServiceMonitor. The proxy exposes Prometheus metrics on its
+# main :4000 port at path `/metrics/` — the TRAILING SLASH is load-bearing (the
+# LiteLLM router 307-redirects /metrics -> /metrics/, and a scraper that does not
+# follow redirects would miss every sample). The pods carry the kustomize
+# commonLabel `app.kubernetes.io/name: litellm` (NOT a bare `app` label — the old
+# prometheus-server job keyed off `app`, which does not exist on these pods).
+#
+# A PodMonitor against the :4000 container port keeps the gateway Service free to
+# stay a LoadBalancer for client traffic. The named container port is `http`
+# (containerPort 4000); the endpoint references it by name so the metrics scrape
+# tracks the real port. Discovered cluster-wide by Alloy's
+# prometheus.operator.podmonitors. Replaces the prometheus-server `litellm`
+# scrape job.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: litellm
+  namespace: litellm
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: gateway-metrics
+spec:
+  namespaceSelector:
+    matchNames:
+      - litellm
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: litellm
+  podMetricsEndpoints:
+    - port: http
+      path: /metrics/
+      scheme: http
+      interval: 30s
+      honorLabels: true
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod

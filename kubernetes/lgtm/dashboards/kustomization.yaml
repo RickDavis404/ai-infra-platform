@@ -1,0 +1,34 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: lgtm
+
+# Hand-rolled, in-scope dashboards sideloaded via the Grafana ConfigMap sidecar
+# (label grafana_dashboard=1, searchNamespace lgtm). Datasource UIDs are baked in
+# (Prometheus PBFA97CFB590B2093, Loki P8E80F9AEF21F6940, Tempo P214B5B846CF3925F)
+# so no DS_* placeholder rewrite is required. Out-of-scope boards
+# (weaviate/milvus/qdrant/pgvector and the workstation-VPN dashboards) are excluded.
+configMapGenerator:
+  - name: dashboard-claude-code
+    files:
+      - claude-code.json
+  - name: dashboard-macmon-workstation
+    files:
+      - macmon-workstation.json
+  - name: dashboard-cnpg-postgres
+    files:
+      - cnpg-postgres.json
+  - name: dashboard-clickhouse-langfuse
+    files:
+      - clickhouse-langfuse.json
+  - name: dashboard-seaweedfs
+    files:
+      - seaweedfs.json
+  - name: dashboard-litellm
+    files:
+      - litellm.json
+
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"

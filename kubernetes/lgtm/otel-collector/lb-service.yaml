@@ -1,0 +1,50 @@
+# otel-collector LoadBalancer Service (host VIP + in-cluster DNS name).
+#
+# The opentelemetry-collector chart runs in `mode: daemonset` and, per the chart's
+# serviceEnabled helper, renders NO Service in that mode. This standalone Service
+# fills both roles with one object:
+#
+#   1. In-cluster: it is named exactly `otel-collector` in ns `lgtm`, so the
+#      existing client endpoints `otel-collector.lgtm.svc.cluster.local:4318`
+#      (LiteLLM deployment, alloy, the Mac-side shipper's port-forward target)
+#      resolve to it. The selector targets the chart's DaemonSet pods.
+#   2. Host-facing: type=LoadBalancer with a Cilium LB-IPAM fixed VIP. The Mac is on
+#      the same 192.168.105.0/24 L2, so the host (and codex) ship OTLP DIRECTLY to
+#      192.168.105.203 — :4318 (HTTP) and :4317 (gRPC) (D005 / ha-networking.md §4).
+#      The `port-forward:otel` port-forward (127.0.0.1:34318) is a non-HA loopback fallback.
+#
+# Both OTLP ports share the single VIP (one Service, two ports — ha-networking.md
+# §4 OTel example). Backends stay ClusterIP-shaped: the selector points at the
+# per-node DaemonSet pods and externalTrafficPolicy stays Cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otel-collector
+  namespace: lgtm
+  labels:
+    app.kubernetes.io/name: opentelemetry-collector
+    app.kubernetes.io/instance: otel-collector
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: otlp-gateway
+  annotations:
+    # Cilium LB-IPAM fixed VIP. Correct key is `lbipam.cilium.io/ips`.
+    lbipam.cilium.io/ips: 192.168.105.203
+spec:
+  type: LoadBalancer
+  # io.cilium/l2-announcer ensures Cilium (not another controller) owns this LB.
+  loadBalancerClass: io.cilium/l2-announcer
+  # Cluster (NOT Local) is required for L2-announced services (ha-networking.md §10).
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: opentelemetry-collector
+    app.kubernetes.io/instance: otel-collector
+    component: agent-collector
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP

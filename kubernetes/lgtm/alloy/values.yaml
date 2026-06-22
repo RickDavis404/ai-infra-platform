@@ -1,0 +1,208 @@
+# Grafana Alloy — meta-observability logs + cluster metrics agent. Chart
+# grafana/alloy 1.10.0 (image tag v1.17.1), namespace lgtm. Rendered via `kustomize build --enable-helm`.
+# Runs as a SINGLE-replica Deployment (no clustering) — both jobs are API-based,
+# not node-local, so one pod covers the whole cluster (see controller: below).
+#
+# TWO jobs in one Deployment pod:
+#   1. LOGS (unchanged): ship the in-cluster OTel Collector's OWN pod logs to Loki,
+#      bypassing the collector itself (the collector cannot reliably log about its
+#      own export failures). This closes the "otel-collector logs absent from Loki"
+#      gap. Alloy is NOT the general container-log path — the OTel Collector's
+#      filelog receiver is.
+#   2. METRICS (new): discover ALL ServiceMonitors and PodMonitors cluster-wide via
+#      the `prometheus.operator.*` components (NO label selector — every SM/PM in
+#      every namespace is honoured, so producers need no special labels), scrape
+#      them, and remote-write the samples to Prometheus. Alloy replaces the old
+#      annotation/static `extraScrapeConfigs` in the Prometheus chart (which has been
+#      removed to avoid a double-scrape).
+#
+# RBAC: the chart-default `rbac.create: true` already grants every group/resource
+# the metrics components need. We pin an EXPLICIT `rbac.rules` set below so a future
+# chart bump that narrows the defaults cannot silently break SM/PM discovery.
+
+# Alloy image pin. Chart 1.10.0 stays as the pinned chart; only the image tag is
+# overridden to v1.17.1 (registry docker.io + repository grafana/alloy remain the
+# correct chart defaults, so no other image key is needed).
+image:
+  tag: v1.17.1
+
+controller:
+  # Single-replica Deployment. Both Alloy jobs here are API-based, NOT node-local:
+  #   - LOGS: `loki.source.kubernetes` tails the OTel Collector's pod logs through
+  #     the kube-apiserver (pods/log subresource), reachable from any node.
+  #   - METRICS: `prometheus.operator.{servicemonitors,podmonitors}` discover and
+  #     scrape SM/PM targets over the network (ClusterIP/pod IPs), not from local
+  #     disk. The general per-node container-log path is the OTel Collector's own
+  #     DaemonSet (filelog receiver) — Alloy is meta-only.
+  # A DaemonSet here ran one Alloy PER NODE, and clustering (gossip memberlist) was
+  # required to shard targets so the pods didn't all scrape every target and
+  # remote_write duplicate series. On this small lab that memberlist never
+  # converged ("failed to rejoin peers", i/o timeout), so every pod scraped all
+  # ~81 targets AND remote_wrote them — pegging one Alloy at ~183% CPU and driving
+  # node loads to 11-13 on 4-CPU nodes. A SINGLE Deployment pod scrapes each target
+  # exactly once, needs no clustering, and runs the full path at ~7% CPU.
+  type: deployment
+  replicas: 1
+
+# Cluster RBAC for the metrics path (and the existing log path). These rules are a
+# pinned superset of what the chart grants by default; they are NOT chart-version
+# dependent. `prometheus.operator.servicemonitors`/`.podmonitors` need to list/watch
+# the SM/PM CRDs plus the underlying endpoints/services/pods to build scrape
+# targets; node + node/metrics + namespaces + configmaps round out kubelet/cAdvisor
+# and discovery support. `endpointslices` is included because newer Kubernetes
+# resolves Endpoints through EndpointSlice.
+rbac:
+  create: true
+  rules:
+    # ServiceMonitor / PodMonitor discovery for `prometheus.operator.*`.
+    - apiGroups: ["monitoring.coreos.com"]
+      resources: ["servicemonitors", "podmonitors", "probes", "scrapeconfigs"]
+      verbs: ["get", "list", "watch"]
+    # Endpoints/Services/Pods that SM/PM targets resolve to (and the log path's
+    # `discovery.kubernetes` role=pod). endpointslices for newer clusters.
+    - apiGroups: ["", "discovery.k8s.io", "networking.k8s.io"]
+      resources: ["endpoints", "endpointslices", "ingresses", "pods", "services"]
+      verbs: ["get", "list", "watch"]
+    # Pod logs + namespaces for the existing `loki.source.kubernetes` log path and
+    # namespace-scoped target discovery.
+    - apiGroups: [""]
+      resources: ["pods", "pods/log", "namespaces", "configmaps"]
+      verbs: ["get", "list", "watch"]
+  clusterRules:
+    # Node-level discovery + kubelet/cAdvisor metrics for the metrics path.
+    - apiGroups: [""]
+      resources: ["nodes", "nodes/metrics", "nodes/proxy"]
+      verbs: ["get", "list", "watch"]
+    - nonResourceURLs: ["/metrics"]
+      verbs: ["get"]
+
+alloy:
+  # Clustering DISABLED. It only exists to shard targets across a multi-replica
+  # controller; with a single Deployment pod there is exactly one owner of every
+  # target, so no gossip ring is needed. Leaving it on adds --cluster.enabled +
+  # a memberlist that, on this lab, never converged ("failed to rejoin peers",
+  # i/o timeout service=cluster) and burned CPU retrying. Off => no cluster
+  # Service, no gossip, the single pod scrapes + remote_writes each series once.
+  clustering:
+    enabled: false
+  # Readiness probe timeout. Kept at 5s (chart default is 1s) so cold start — when
+  # prometheus.operator.* does its initial discovery of ~21 SMs + ~8 PMs and the
+  # remote_write WAL backfills all at once — doesn't trip a too-tight /-/ready
+  # probe and flap the single pod at 1/2 Ready while it is in fact healthy.
+  timeoutSeconds: 5
+  resources:
+    requests:
+      # This single Alloy (Deployment) runs the FULL metrics path: cluster-wide
+      # prometheus.operator.{servicemonitors,podmonitors} discovery of ~21 SMs +
+      # ~8 PMs, scrapes every resolved target, buffers a remote_write WAL to
+      # Prometheus, AND the loki.* log pipeline. At cold start all three ramp at
+      # once (initial scrape storm + WAL backlog), so the request must cover the
+      # discovery+remote_write working set and the limit must leave OOM headroom.
+      # 100m / 256Mi request, 768Mi limit; steady state sits well under request.
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 768Mi
+
+  # River config. Discovers pods in lgtm labelled
+  # app.kubernetes.io/name=opentelemetry-collector, drops Alloy's own pods
+  # (anti-loop), stamps service_name=otel-collector-self, and pushes to Loki.
+  configMap:
+    content: |-
+      // Discover every pod in the lgtm namespace.
+      discovery.kubernetes "lgtm_pods" {
+        role = "pod"
+        namespaces {
+          names = ["lgtm"]
+        }
+      }
+
+      // Keep only the in-cluster OTel Collector's pods; drop Alloy's own pods so
+      // Alloy never ships its own logs back through itself (anti-loop).
+      discovery.relabel "otel_collector_only" {
+        targets = discovery.kubernetes.lgtm_pods.targets
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex         = "opentelemetry-collector"
+          action        = "keep"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+          regex         = "alloy"
+          action        = "drop"
+        }
+
+        // Stamp the meta-observability service identity.
+        rule {
+          target_label = "service_name"
+          replacement  = "otel-collector-self"
+        }
+
+        // Carry pod/namespace identity into Loki labels.
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          target_label  = "namespace"
+        }
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          target_label  = "pod"
+        }
+
+        // Path to the on-node container log files for the kept pods.
+        rule {
+          source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+          separator     = "/"
+          target_label  = "__path__"
+          replacement   = "/var/log/pods/*$1/*.log"
+        }
+      }
+
+      // Tail the discovered pod log files.
+      loki.source.kubernetes "otel_collector_self" {
+        targets    = discovery.relabel.otel_collector_only.output
+        forward_to = [loki.write.lgtm.receiver]
+      }
+
+      // Ship to Loki. The distributed Loki chart exposes NO bare `loki`
+      // Service (only loki-gateway / loki-write / loki-read / loki-backend), so
+      // the old loki.lgtm.svc.cluster.local:3100 target silently dropped every
+      // line. Push through the gateway (nginx, port 80) instead.
+      loki.write "lgtm" {
+        endpoint {
+          url = "http://loki-gateway.lgtm.svc.cluster.local/loki/api/v1/push"
+        }
+      }
+
+      // ===================================================================
+      // METRICS PATH — Prometheus-operator CRD discovery (cluster-wide).
+      // ===================================================================
+      // Discover EVERY ServiceMonitor in the cluster. No `selector {}` block is
+      // given, so the component matches ALL ServiceMonitors in ALL namespaces —
+      // SM producers do NOT need any special label. Each discovered SM's endpoints
+      // become scrape targets, scraped here, and forwarded to remote_write.
+      prometheus.operator.servicemonitors "all" {
+        forward_to = [prometheus.remote_write.metrics.receiver]
+        // No `clustering {}` block: this runs in a single-replica Deployment, so
+        // this pod is the sole owner of every discovered target. Each target is
+        // scraped and remote_written exactly once — no duplicates, no gossip ring.
+      }
+
+      // Discover EVERY PodMonitor in the cluster (same all-namespaces, no-selector
+      // semantics as above).
+      prometheus.operator.podmonitors "all" {
+        forward_to = [prometheus.remote_write.metrics.receiver]
+      }
+
+      // Remote-write the scraped samples to the standalone Prometheus server. The
+      // prometheus-community/prometheus chart fronts the server on Service
+      // `prometheus-server` (ns lgtm) port 80 -> 9090, and the server runs under
+      // the `/prometheus` route-prefix (--web.route-prefix=/prometheus), so the
+      // remote-write receiver lives at /prometheus/api/v1/write. The receiver is
+      // enabled server-side via --web.enable-remote-write-receiver.
+      prometheus.remote_write "metrics" {
+        endpoint {
+          url = "http://prometheus-server.lgtm.svc.cluster.local/prometheus/api/v1/write"
+        }
+      }
