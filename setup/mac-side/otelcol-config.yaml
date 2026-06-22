@@ -1,0 +1,129 @@
+# setup/mac-side/otelcol-config.yaml
+#
+# Mac-side OTel Collector (otelcol-contrib) config (spec §8.4 / §13.2.3). The host
+# telemetry shipper: it scrapes the llama-swap aggregate and the macmon exporter,
+# collects hostmetrics, tails the llama-swap + llama-server stderr logs, stamps
+# host identity, and exports OTLP/HTTP to the in-cluster Collector at the Cilium
+# service VIP http://192.168.105.203:4318/v1/* — reachable DIRECTLY because the Mac
+# is on the same 192.168.105.0/24 L2 (D005 / ha-networking.md §4). The old
+# port-forward target http://127.0.0.1:34318/v1/* is kept as a non-HA loopback
+# fallback (see the commented endpoints below). This collector exposes NO inbound
+# public port; its own internal/telemetry binds stay on 127.0.0.1.
+#
+# Hard rule: the prometheus receiver scrapes ONLY the aggregate
+# 127.0.0.1:38080/metrics (job llama-swap) and 127.0.0.1:39300/metrics (job macmon).
+# It MUST NOT scrape llama-swap per-model /upstream/<model>/metrics — every scrape
+# there auto-LOADS the model (spawns a fresh llama-server), thrashing the host.
+
+receivers:
+  # Aggregate llama-swap /metrics (job llama-swap, 15s) + macmon exporter
+  # /metrics (job macmon, 5s). No per-model /upstream targets, ever.
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: llama-swap
+          scrape_interval: 15s
+          static_configs:
+            - targets: ["127.0.0.1:38080"]
+        - job_name: macmon
+          scrape_interval: 5s
+          static_configs:
+            - targets: ["127.0.0.1:39300"]
+
+  # Darwin-limited host metrics; macmon fills the Apple-Silicon hardware gaps.
+  hostmetrics:
+    collection_interval: 15s
+    scrapers:
+      cpu: {}
+      load: {}
+      memory: {}
+      disk: {}
+      filesystem: {}
+      network: {}
+      paging: {}
+      processes: {}
+
+  # llama-swap stdout/stderr log (the launchd agent's StandardOut/ErrorPath);
+  # shipped under service.name=llama-swap.
+  filelog/llama-swap:
+    include:
+      - ${env:HOME}/Library/Logs/ai-infra/llama-swap.log
+    include_file_path: true
+    start_at: end
+    resource:
+      service.name: llama-swap
+
+  # llama-server stderr (via the stderr-tee wrapper, since llama-swap does not
+  # proxy child stderr); shipped under service.name=llama-server.
+  filelog/llama-server:
+    include:
+      - ${env:TMPDIR}/ai-infra-llama-server.err.log
+    include_file_path: true
+    start_at: end
+    resource:
+      service.name: llama-server
+
+processors:
+  # Stamp host identity + the universal lab attributes (§13 identity taxonomy).
+  resource:
+    attributes:
+      - key: host.name
+        value: ${env:HOSTNAME}
+        action: upsert
+      - key: host.id
+        value: mac-local
+        action: upsert
+      - key: deployment.environment
+        value: ai-infra-platform-local
+        action: upsert
+
+  # A `source` data-point attribute marking telemetry as host-originated.
+  attributes/source:
+    actions:
+      - key: source
+        value: mac-host
+        action: upsert
+
+  batch:
+    send_batch_size: 1024
+    timeout: 10s
+
+exporters:
+  # OTLP/HTTP to the in-cluster Collector at plain :4318 with /v1/* paths (no /otel
+  # prefix). Primary target is the Cilium service VIP 192.168.105.203 — reachable
+  # DIRECTLY from the Mac over the shared 192.168.105.0/24 L2, and HA (the VIP fails
+  # over across control-plane nodes). To fall back to the non-HA `port-forward:otel`
+  # port-forward, swap the four endpoints to the 127.0.0.1:34318 forms shown in the
+  # trailing comment.
+  otlphttp:
+    endpoint: http://192.168.105.203:4318
+    traces_endpoint: http://192.168.105.203:4318/v1/traces
+    metrics_endpoint: http://192.168.105.203:4318/v1/metrics
+    logs_endpoint: http://192.168.105.203:4318/v1/logs
+    # Non-HA port-forward fallback (kubectl port-forward svc/otel-collector, ns lgtm):
+    #   endpoint: http://127.0.0.1:34318
+    #   traces_endpoint: http://127.0.0.1:34318/v1/traces
+    #   metrics_endpoint: http://127.0.0.1:34318/v1/metrics
+    #   logs_endpoint: http://127.0.0.1:34318/v1/logs
+    tls:
+      insecure: true
+
+service:
+  # Bind the internal collector endpoints to 127.0.0.1 only (no public port).
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 127.0.0.1
+                port: 38888
+  pipelines:
+    metrics:
+      receivers: [prometheus, hostmetrics]
+      processors: [resource, attributes/source, batch]
+      exporters: [otlphttp]
+    logs:
+      receivers: [filelog/llama-swap, filelog/llama-server]
+      processors: [resource, attributes/source, batch]
+      exporters: [otlphttp]
