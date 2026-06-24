@@ -1,0 +1,105 @@
+# AGENTS.md — Codex repo instructions
+
+This file is Codex's first-turn repo context. It is walked from the project root down to
+the working directory; where no nested `AGENTS.md` exists, Codex falls back to `CLAUDE.md`
+(`project_doc_fallback_filenames = ["CLAUDE.md"]` in `.codex/config.toml`). The two
+instruction surfaces are deliberately consistent — read `CLAUDE.md` for the full project
+guide; this file states the Codex-specific essentials.
+
+## First run: the trust gate
+
+The committed `.codex/config.toml` is **inert until you mark this project trusted.** On an
+untrusted project Codex skips all project-scoped `.codex/` layers (config, MCP servers,
+rules) and uses only your user/system config. On first launch Codex prompts to trust the
+project; approving it records `trust_level = "trusted"` for this path in your **global**
+`~/.codex/config.toml` (never in the repo). If you never grant trust, the repo's model
+defaults and MCP server definitions silently do not apply.
+
+`CODEX_HOME` stays at its default (`~/.codex`) — do not repoint it into the repo. The repo
+ships policy via `.codex/config.toml` only; your credentials and history stay in your user
+home.
+
+## What this repo is
+
+A **local AI infrastructure lab**: a 3-node upstream **kubeadm** control plane on Lima
+VMs (`ai-inf-platform-0/1/2`) on one Mac, with stacked etcd, a kube-vip API VIP, Cilium in
+kube-proxy-free mode, LiteLLM, Langfuse, and an LGTM observability stack. Coding agents run
+through the local LiteLLM gateway and every request/tool turn can be correlated through
+Langfuse, Loki, Tempo, Prometheus, and Grafana. There is no public ingress and no NodePort
+surface. Namespaces: `litellm`, `langfuse` / `langfuse-data`, `lgtm`,
+`cnpg-system`, `clickhouse-system`, `local-path-storage`, `spegel`, plus Cilium,
+Hubble, kube-vip, and core control-plane support in `kube-system`.
+
+## Access (private L2 service VIPs + loopback fallback)
+
+Primary host access uses Cilium `LoadBalancer` VIPs on the Lima shared L2
+(`192.168.105.0/24` by default). These VIPs are reachable only from the host/private
+VM network, not from the public internet:
+
+- Kubernetes API: kube-vip `https://192.168.105.40:6443`.
+- LiteLLM gateway: `http://192.168.105.200:4000/v1`.
+- Langfuse: `http://192.168.105.201:3000`.
+- Grafana: `http://192.168.105.202:3000`.
+- OTel Collector OTLP/HTTP: `http://192.168.105.203:4318`.
+- Hubble UI: `http://192.168.105.204`.
+
+Loopback port-forward tasks (`port-forward:*`) remain as a non-HA fallback for UI access and
+debugging. Keep port-forwards bound to `127.0.0.1`; they cannot prove service-VIP failover.
+
+## How Codex reaches the gateway
+
+The committed `.codex/config.toml` cannot wire the provider: Codex ignores
+`model_provider`, `model_providers`, `openai_base_url`, and `chatgpt_base_url` at the
+project layer. Provider wiring is injected at **launch** by the mise `codex:launch` task via
+`-c/--config` overrides (strongest precedence), which point Codex at
+the LiteLLM gateway with `wire_api = "responses"` and the proxy-auth header
+`X-Litellm-Api-Key = "Bearer <CODEX_LITELLM_VIRTUAL_KEY>"`. The OpenAI/Codex subscription
+itself is handled server-side by LiteLLM's native `chatgpt/` provider (device-flow OAuth),
+not by a key in this repo.
+
+Launch Codex through the task so the overrides and secrets are applied:
+
+```bash
+mise run codex:launch  # sources fnox+age env, applies -c overrides, execs codex
+```
+
+## Testing subscription (OAuth) models — real CLI only, NEVER curl
+
+The Claude and OpenAI/Codex **subscription** models are authenticated by the original agent
+CLI's OAuth session (`claude` / `codex`). The CLI is the **only** authorized OAuth client: a
+`curl` or any hand-rolled HTTP client can **not** validly test a subscription model — even
+through the LiteLLM gateway — because it cannot reproduce the CLI's OAuth session handling.
+Discard any such result (2xx or 4xx/5xx). To test passthrough, drive the real CLI at the
+gateway VIP (Codex: `mise run codex:launch`; Claude: `claude` with
+`ANTHROPIC_BASE_URL=http://192.168.105.200:4000`). A launch that does not set the base URL to
+the VIP runs **direct** to the provider, so "it works" proves only the direct path, not the
+passthrough.
+
+## Secrets — fnox + age
+
+No plaintext secret is committed. The authoritative store is the repo-root `fnox.toml`
+(fnox + age ciphertext; fnox discovers it by walking up from any subdir). The first-run flow is:
+
+```bash
+mise run init           # host prereqs, Lima networking, age key guidance, secret sealing
+mise run secrets:check  # fast preflight: key names only, no values printed
+mise run up             # host services -> Lima/kubeadm/Cilium -> k8s overlays
+```
+
+`secrets:sync` materializes namespaced Kubernetes Secrets during `k8s:apply`; launch tasks
+resolve agent virtual keys and MCP credentials from fnox at runtime. The committed MCP
+server definitions in `.codex/config.toml` must contain only non-secret hosts/toggles;
+credentials are injected at launch.
+
+## Conventions
+
+- Shell scripts: `#!/usr/bin/env bash`, `set -euo pipefail`, 2-space indent; pass
+  `shellcheck -s bash` and `shfmt -i 2`; source `.config/mise/lib/common.sh`. Never echo a
+  secret.
+- Kustomize bases inline Helm via `helmCharts:` with exact pinned versions; LiteLLM is raw
+  manifests.
+- Telemetry identity: `deployment.environment=ai-infra-platform-local`, `ai.client.name`
+  of `codex` / `claude-code` / `smoke-test`, `session.id` as the universal join key.
+
+See `CLAUDE.md` for the full project guide, the mise task surface, and the apply order
+documented in `kubernetes/README.md`.
