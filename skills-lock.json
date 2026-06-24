@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "design-doc-mermaid": {
+      "source": "spillwavesolutions/design-doc-mermaid",
+      "sourceType": "github",
+      "skillPath": "SKILL.md",
+      "computedHash": "362eecfd376c8932aa86d366a6406bf389ac4f2f52d93e5892adf8c963392afe"
+    },
+    "oauth": {
+      "source": "vercel-labs/portless",
+      "sourceType": "github",
+      "skillPath": "skills/oauth/SKILL.md",
+      "computedHash": "9dbf0a5cc15d805924816a4df6654b105a163618ff986c79f6974211164b34a7"
+    },
+    "portless": {
+      "source": "vercel-labs/portless",
+      "sourceType": "github",
+      "skillPath": "skills/portless/SKILL.md",
+      "computedHash": "3afca398409c64eb5f4196db4d3b345a523b3c71092bdf30eafc5ab97885f3b3"
+    }
+  }
+}
