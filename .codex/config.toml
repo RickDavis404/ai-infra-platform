@@ -1,0 +1,23 @@
+sandbox_mode = "workspace-write"
+project_doc_fallback_filenames = ["CLAUDE.md"]
+
+[mcp_servers.grafana]
+command = "uvx"
+args = ["mcp-grafana", "--disable-write"]
+
+[mcp_servers.grafana.env]
+GRAFANA_URL = "http://192.168.105.202:3000"
+
+[mcp_servers.langfuse]
+command = "uvx"
+args = ["langfuse-mcp"]
+
+[mcp_servers.langfuse.env]
+LANGFUSE_HOST = "http://192.168.105.201:3000"
+LANGFUSE_MCP_READ_ONLY = "true"
+
+[shell_environment_policy]
+inherit = "core"
+
+[sandbox_workspace_write]
+network_access = true

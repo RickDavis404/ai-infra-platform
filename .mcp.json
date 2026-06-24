@@ -1,0 +1,34 @@
+{
+  "mcpServers": {
+    "grafana": {
+      "command": "uvx",
+      "args": ["mcp-grafana", "--disable-write"]
+    },
+    "langfuse": {
+      "command": "uvx",
+      "args": ["langfuse-mcp"]
+    },
+    "kubernetes": {
+      "command": "uvx",
+      "args": ["kubernetes-mcp-server@latest", "--read-only"]
+    },
+    "postgres-langfuse": {
+      "command": "uvx",
+      "args": ["postgres-mcp", "--access-mode=restricted"],
+      "env": {
+        "DATABASE_URI": "${LANGFUSE_PG_MCP_URI:-}"
+      }
+    },
+    "postgres-litellm": {
+      "command": "uvx",
+      "args": ["postgres-mcp", "--access-mode=restricted"],
+      "env": {
+        "DATABASE_URI": "${LITELLM_PG_MCP_URI:-}"
+      }
+    },
+    "clickhouse": {
+      "command": "uvx",
+      "args": ["mcp-clickhouse"]
+    }
+  }
+}

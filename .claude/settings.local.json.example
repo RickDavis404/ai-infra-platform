@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "defaultMode": "plan",
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:langfuse.com)",
+      "WebFetch(domain:docs.litellm.ai)"
+    ]
+  },
+  "env": {
+    "ANTHROPIC_CUSTOM_HEADERS": "x-litellm-api-key: Bearer <CLAUDE_CODE_LITELLM_VIRTUAL_KEY>",
+    "LANGFUSE_PUBLIC_KEY": "<fnox+age-managed>",
+    "LANGFUSE_SECRET_KEY": "<fnox+age-managed>",
+    "GRAFANA_PASSWORD": "<fnox+age-managed>"
+  }
+}

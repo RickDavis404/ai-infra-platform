@@ -1,0 +1,20 @@
+{
+  "extraKnownMarketplaces": {
+    "langfuse-observability": {
+      "source": {
+        "source": "github",
+        "repo": "langfuse/Claude-Observability-Plugin"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "langfuse-observability@langfuse-observability": true
+  },
+
+  "enableAllProjectMcpServers": true,
+
+  "disableRemoteControl": false,
+  "remoteControlAtStartup": true,
+
+  "showThinkingSummaries": true
+}
