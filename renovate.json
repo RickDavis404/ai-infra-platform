@@ -1,0 +1,84 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests",
+    ":semanticCommitsDisabled"
+  ],
+  "timezone": "America/New_York",
+  "schedule": ["before 8am on monday"],
+  "labels": ["dependencies"],
+  "minimumReleaseAge": "3 days",
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "branchConcurrentLimit": 5,
+  "rebaseWhen": "conflicted",
+  "dependencyDashboard": true,
+  "dependencyDashboardTitle": "Renovate dependency dashboard",
+  "osvVulnerabilityAlerts": true,
+  "vulnerabilityAlerts": {
+    "addLabels": ["security"],
+    "schedule": ["at any time"],
+    "minimumReleaseAge": null
+  },
+  "ignorePaths": [
+    "kubernetes/**/charts/**",
+    "planning/**",
+    ".sandbox-*/**",
+    "**/*.tmpl"
+  ],
+  "helm-values": { "enabled": false },
+  "helmv3": { "enabled": false },
+  "mise": {
+    "managerFilePatterns": [
+      "/(^|/)\\.config/mise/conf\\.d/[^/]+\\.toml$/"
+    ]
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Bump the tag@sha256 digest pins on raw (non-chart) container images in kubernetes/**/*.yaml.",
+      "managerFilePatterns": [
+        "/^kubernetes/.+\\.ya?ml$/"
+      ],
+      "matchStrings": [
+        "image:\\s*[\"']?(?<depName>[^\\s:@\"']+):(?<currentValue>[^\\s@\"']+)@(?<currentDigest>sha256:[a-f0-9]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Group the vendored Helm chart pins (helmCharts.version in kubernetes/**/kustomization.yaml); non-major only.",
+      "matchManagers": ["kustomize"],
+      "matchDatasources": ["helm"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "helm charts (non-major)"
+    },
+    {
+      "description": "Group the raw-manifest container image tag/digest pins; non-major only.",
+      "matchManagers": ["custom.regex"],
+      "matchDatasources": ["docker"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "groupName": "container images (non-major)"
+    },
+    {
+      "description": "Group the mise toolchain pins in .config/mise/conf.d/*.toml; non-major only.",
+      "matchManagers": ["mise"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "mise toolchain"
+    },
+    {
+      "description": "Group GitHub Actions used by the CI workflows.",
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions"
+    },
+    {
+      "description": "Hold every MAJOR upgrade for explicit review via the dependency dashboard (no PR opens until ticked).",
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true,
+      "minimumReleaseAge": "7 days",
+      "addLabels": ["major"]
+    }
+  ]
+}
