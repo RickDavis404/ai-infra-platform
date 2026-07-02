@@ -1,0 +1,85 @@
+# kubeconform.yaml — render every kubernetes/<component> overlay and schema-validate
+# the result. Additive gate: it renders with `kustomize build --enable-helm` (the same
+# primitive `validate:helm-kustomize` uses) via the repo's own render-all.sh, then runs
+# kubeconform over the concatenated manifest stream. It never talks to a live cluster.
+#
+# Tool versions are pinned: kustomize + helm come from the repo's mise pins
+# (.config/mise/conf.d/00-tools.toml), mise itself and kubeconform are pinned below.
+# Actions are pinned by tag; Renovate (helpers:pinGitHubActionDigests) rewrites those
+# tags to immutable commit SHAs on its first run and keeps them current thereafter.
+---
+name: kubeconform
+
+"on":
+  push:
+    branches: [main]
+    paths:
+      - "kubernetes/**"
+      - ".config/mise/conf.d/00-tools.toml"
+      - ".config/mise/lib/render-all.sh"
+      - ".github/workflows/kubeconform.yaml"
+  pull_request:
+    paths:
+      - "kubernetes/**"
+      - ".config/mise/conf.d/00-tools.toml"
+      - ".config/mise/lib/render-all.sh"
+      - ".github/workflows/kubeconform.yaml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kubeconform-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pinned; tracked by Renovate. kubeconform release: https://github.com/yannh/kubeconform/releases
+  KUBECONFORM_VERSION: "v0.6.7"
+
+jobs:
+  render-and-validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4 # renovate: pinned to a SHA on first Renovate run
+
+      - name: Set up mise (pins kustomize + helm from the repo toolchain)
+        uses: jdx/mise-action@v2 # renovate: pinned to a SHA on first Renovate run
+        with:
+          version: "2026.6.13"
+          install: false
+
+      - name: Install the pinned render tools (kustomize + helm only)
+        run: mise install kustomize helm
+
+      - name: Install kubeconform (pinned)
+        run: |
+          set -euo pipefail
+          url="https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz"
+          curl -fsSL "${url}" | sudo tar -xz -C /usr/local/bin kubeconform
+          kubeconform -v
+
+      - name: Render all overlays (kustomize build --enable-helm)
+        run: |
+          set -euo pipefail
+          # render-all.sh logs to stderr and emits pure manifest YAML on stdout.
+          # mise exec scopes to the two pinned tools so the flaky/optional host tools
+          # (ubi otelcol, node, python) are never resolved in CI.
+          mise exec kustomize helm -- bash .config/mise/lib/render-all.sh > rendered.yaml
+          if [ ! -s rendered.yaml ]; then
+            echo "ERROR: render produced no output" >&2
+            exit 1
+          fi
+          echo "Rendered $(grep -c '^---' rendered.yaml || true) document separator(s)."
+
+      - name: Validate rendered manifests with kubeconform
+        run: |
+          set -euo pipefail
+          kubeconform \
+            -strict \
+            -ignore-missing-schemas \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            -summary \
+            rendered.yaml
