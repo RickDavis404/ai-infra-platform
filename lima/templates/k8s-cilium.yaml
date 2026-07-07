@@ -1,9 +1,10 @@
 # lima/templates/k8s-cilium.yaml
-# Parameterized upstream-kubeadm Kubernetes template for a 3-node HA control plane
-# (stacked etcd, quorum 2/3) on Lima, with a kube-vip control-plane VIP and Cilium
-# CNI installed out-of-band. Derived from the Lima Tier-1 `template:k8s` (COPIED +
-# edited, NOT used as a base:). See decision D005 and research feedback-v2/
-# {lima,ha-networking}.md.
+# Parameterized upstream-kubeadm Kubernetes template for the kubeadm control plane
+# on Lima — 3-node HA (stacked etcd, quorum 2/3) by default, or a single node when
+# AI_INFRA_PROFILE=lean (role=init only; lima:start creates no joiners) — with a
+# kube-vip control-plane VIP and Cilium CNI installed out-of-band. Derived from the
+# Lima Tier-1 `template:k8s` (COPIED + edited, NOT used as a base:). See decision
+# D005 and research feedback-v2/{lima,ha-networking}.md.
 #
 # Differences vs the upstream k8s template:
 #   - vmType vz + virtiofs writable per-instance host mounts (storage + config),
@@ -20,9 +21,10 @@
 #     installed by the k8s:cilium task afterwards).
 #
 # Roles (Param.role):
-#   init  — ai-inf-platform-0: `kubeadm init`, uploads certs, becomes the first CP node.
-#   join  — ai-inf-platform-1/2: `kubeadm join --control-plane` via the join command captured
-#           from ai-inf-platform-0 (passed base64 in Param.joinCmdB64).
+#   init  — ai-inf-platform-0: `kubeadm init`, uploads certs, becomes the first CP node
+#           (and the ONLY node under AI_INFRA_PROFILE=lean).
+#   join  — ai-inf-platform-1/2 (HA profile only): `kubeadm join --control-plane` via the
+#           join command captured from ai-inf-platform-0 (passed base64 in Param.joinCmdB64).
 minimumLimaVersion: 2.0.0
 base: template:_images/ubuntu-lts
 
@@ -31,10 +33,23 @@ base: template:_images/ubuntu-lts
 vmType: vz
 mountType: virtiofs
 
-# Fixed v1 default sizing (per node). Sizing is not hot-editable; a deliberate bump is
+# Fixed default sizing (per node). Sizing is not hot-editable; a deliberate change is
 # re-applied via delete+recreate (see lima:recreate).
-cpus: 4
-memory: 8GiB
+# HA default for a 32GB host: cpus 3 / memory 9GiB. 3 x 9 = 27GiB of VM memory leaves
+# ~5GB host headroom (macOS + shippers + the driving agent), no swap; 3 x 3 = 9 vCPU
+# stays at or under a 10-core M-series host with a core spare — no CPU oversubscription
+# (the earlier kube-vip VIP flap came from 12 vCPU on 8 cores plus paging). 5GiB nodes ran
+# at ~95% physical memory and livelocked kswapd/kubelet; and 8GiB packed 2/3 nodes
+# memory-full at the HA request floors, which stranded a node-pinned local-path pod
+# (tempo) on a full node — 9GiB gives each node ~1GiB more Allocatable so the HA working
+# set schedules reliably regardless of PV placement. The lean/16GB-host profile
+# is a SINGLE node (role=init only, no joins) at 6 vCPU / 12GiB: three ~4.5GiB nodes
+# paid the control-plane tax 3x and lost the rest to cross-node bin-packing while the
+# host compressed/thrashed; one big node pays it once and pools all Allocatable.
+# AI_INFRA_PROFILE=lean makes lima:start append the `--set` size override at create
+# and skip the join nodes entirely (see .config/mise/tasks/lima/start.sh).
+cpus: 3
+memory: 9GiB
 disk: 50GiB
 
 # Real L2 via socket_vmnet `shared` (192.168.105.0/24). The macOS host is on this
@@ -72,6 +87,15 @@ param:
   # the cache VM's DISCOVERED DHCP IP via `--set` (cache:up writes the real value to
   # AI_INFRA_REGISTRY_ADDR in the gitignored 99-local.toml). See lima/templates/registry.yaml.
   registryAddr: "192.168.105.50:5000"
+  # Kubelet systemReserved MEMORY carve-out (consumed by the KubeletConfiguration in
+  # the role=init provision step; stored in the kubeadm kubelet-config ConfigMap, so
+  # every node inherits it). 1280Mi is the measured PER-NODE control-plane + system
+  # baseline (~1.3GiB: apiserver, controller-manager, scheduler, etcd, kube-vip,
+  # sshd/journald, ...) and applies to BOTH profiles: the single lean node runs the
+  # exact same stack once, and on its 12GiB VM the carve-out is negligible (~10.7GiB
+  # Allocatable remains). Kept as a param so an operator can still override it via
+  # `--set .param.systemReservedMem` at create.
+  systemReservedMem: "1280Mi"
   # For role=join: base64 of the full `kubeadm join ... --control-plane` command
   # captured from ai-inf-platform-0 (`kubeadm init` --upload-certs output + the printed
   # certificate key). Empty for role=init.
@@ -346,6 +370,24 @@ provision:
     kind: KubeletConfiguration
     apiVersion: kubelet.config.k8s.io/v1beta1
     cgroupDriver: systemd
+    # Honest node capacity. The measured control-plane + system baseline (~1.3GiB/node:
+    # apiserver, controller-manager, scheduler, etcd, kube-vip, sshd/journald, ...) is
+    # nearly all UNREQUESTED — only etcd's ~100Mi is visible to the scheduler — so
+    # without this, request-based packing places pods against memory that is already
+    # spent. systemReserved carves that baseline out of Allocatable so placement
+    # matches reality, and the raised evictionHard threshold makes kubelet evict while
+    # it still can — BEFORE actual usage crosses the VM's physical ceiling into the
+    # kswapd livelock that wedges kubelet and flaps the node NotReady. (Stored in the
+    # kubeadm kubelet-config ConfigMap at init, so all three nodes inherit it.)
+    # systemReserved.memory is the systemReservedMem param (HA default 1280Mi; lean
+    # 1024Mi via lima:start — see the param block). evictionHard stays a FIXED 300Mi
+    # for BOTH profiles on purpose: the guests are swapless, and loosening it has
+    # already flapped nodes NotReady — do not parameterize it.
+    systemReserved:
+      cpu: 250m
+      memory: "{{.Param.systemReservedMem}}"
+    evictionHard:
+      memory.available: "300Mi"
     EOF
     kubeadm init --config kubeadm-config.yaml --upload-certs --skip-phases=addon/kube-proxy
     # k8s >= 1.29: now that admin.conf RBAC bindings exist, swap the kube-vip host path

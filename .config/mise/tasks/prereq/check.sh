@@ -40,11 +40,11 @@ else
   bad "architecture: expected arm64 (Apple Silicon), got $(uname -m)"
 fi
 
-# --- bash 4+ (macOS ships 3.2; scripts use mapfile / assoc arrays, spec §8.2) ---
-if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
-  ok "bash: ${BASH_VERSION} (>= 4)"
+# --- bash 3.2+ (stock macOS bash is 3.2; scripts avoid mapfile / assoc arrays) ---
+if [[ "${BASH_VERSINFO[0]:-0}" -gt 3 || ("${BASH_VERSINFO[0]:-0}" -eq 3 && "${BASH_VERSINFO[1]:-0}" -ge 2) ]]; then
+  ok "bash: ${BASH_VERSION} (>= 3.2)"
 else
-  bad "bash: ${BASH_VERSION:-unknown} too old; need >= 4 (brew install bash; /opt/homebrew/bin must precede /usr/bin on PATH)"
+  bad "bash: ${BASH_VERSION:-unknown} too old; need >= 3.2 (the stock macOS version)"
 fi
 
 # --- Homebrew (Apple Silicon prefix /opt/homebrew) ---
@@ -75,7 +75,9 @@ for tool in "${required_tools[@]}"; do
 done
 
 # --- Mac-side service binaries (host model serving + telemetry, §8.3/§8.4) ---
-host_tools=(llama-server llama-swap macmon)
+# alloy is the Grafana Alloy host telemetry shipper (Homebrew `grafana-alloy`,
+# binary `alloy`); it replaced the manually-staged otelcol-contrib.
+host_tools=(llama-server llama-swap macmon alloy)
 for tool in "${host_tools[@]}"; do
   if command -v "${tool}" >/dev/null 2>&1; then
     ok "host tool present: ${tool}"
@@ -83,13 +85,6 @@ for tool in "${host_tools[@]}"; do
     printf 'WARN  host tool missing: %s (needed only for host:up)\n' "${tool}" >&2
   fi
 done
-
-# otelcol-contrib may be staged to ~/.local/bin (no homebrew-core formula, §8.3).
-if command -v otelcol-contrib >/dev/null 2>&1 || [[ -x "${HOME}/.local/bin/otelcol-contrib" ]]; then
-  ok "host tool present: otelcol-contrib"
-else
-  printf 'WARN  host tool missing: otelcol-contrib (stage pinned binary to ~/.local/bin)\n' >&2
-fi
 
 printf '\nprereq-check: %d passed, %d failed.\n' "${pass}" "${fail}"
 if [[ "${fail}" -ne 0 ]]; then

@@ -65,6 +65,16 @@ render_cilium_dir() {
     -e "s#${DEF_LB_STOP}#${LB_STOP}#g" \
     "${tmp}/lb-ipam-pool.yaml"
   rm -f "${tmp}"/*.bak
+  # AI_INFRA_PROFILE=lean runs a SINGLE-node cluster (see lima/start.sh): the
+  # committed operator.replicas: 2 (HA leader-election pair) can never fully roll
+  # out there — the chart's default REQUIRED hostname podAntiAffinity on the
+  # operator pins the second replica Pending forever, and wait_ready's
+  # `rollout status deploy/cilium-operator` would time out and DIE. Scale the
+  # operator to 1 in the temp render copy only; the committed values.yaml keeps the
+  # HA posture byte-identical.
+  if [[ "${AI_INFRA_PROFILE:-lean}" == "lean" ]]; then
+    yq -i '.operator.replicas = 1' "${tmp}/values.yaml"
+  fi
   printf '%s\n' "${tmp}"
 }
 
@@ -112,6 +122,10 @@ apply_lb_l2() {
 
 main() {
   require_cmd kubectl
+  # yq is only shelled out to on the lean path (operator.replicas rewrite in
+  # render_cilium_dir); require it up front there so the failure is a clear
+  # missing-tool error, not a mid-render one.
+  [[ "${AI_INFRA_PROFILE:-lean}" != "lean" ]] || require_cmd yq
   [ -d "${CILIUM_DIR}" ] || die "Cilium base not found: ${CILIUM_DIR}"
 
   # Render the cilium dir once with env IPs substituted; reused by every apply path.

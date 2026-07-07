@@ -44,32 +44,18 @@ main() {
   ) || die "fnox export failed — is your age identity available (FNOX_AGE_KEY_FILE / Keychain)?"
   chmod 600 "${check_dec}"
 
-  declare -A sv=()
-  local line key value
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    [[ "${line}" =~ ^[[:space:]]*# ]] && continue
-    [[ "${line}" =~ ^[[:space:]]*$ ]] && continue
-    [[ "${line}" == *=* ]] || continue
-    key="${line%%=*}"
-    value="${line#*=}"
-    value="${value%$'\r'}"
-    if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
-      value="${value#\"}"
-      value="${value%\"}"
-    fi
-    [[ "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    sv["${key}"]="${value}"
-  done <"${check_dec}"
-
-  local missing=() placeholders=()
+  # Read each required key on demand (bash 3.2-safe; no associative array). sv_get
+  # returns non-zero when the key is ABSENT and prints the value otherwise; values
+  # are only tested in memory, never logged.
+  local missing=() placeholders=() key value
   for key in "${required_keys[@]}"; do
-    if [[ -z "${sv[${key}]+x}" ]]; then
+    if ! value="$(sv_get "${check_dec}" "${key}")"; then
       missing+=("${key}")
       continue
     fi
-    case "${sv[${key}]}" in
-    "" | CHANGEME-* | "<fnox+age-managed>") placeholders+=("${key}") ;;
-    esac
+    if ai_infra_secret_is_placeholder "${value}"; then
+      placeholders+=("${key}")
+    fi
   done
 
   if ((${#missing[@]})); then

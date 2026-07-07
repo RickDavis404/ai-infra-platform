@@ -64,7 +64,10 @@ if [[ ! -f "${private_name_list}" ]]; then
   die ".config/mise/lib/forbidden-names.txt not found; cannot run docs private-name guard"
 fi
 
-mapfile -t private_patterns < <(grep -vE '^[[:space:]]*(#|$)' "${private_name_list}")
+private_patterns=()
+while IFS= read -r line; do
+  private_patterns+=("${line}")
+done < <(grep -vE '^[[:space:]]*(#|$)' "${private_name_list}")
 if [[ "${#private_patterns[@]}" -gt 0 ]]; then
   private_pat="$(
     IFS='|'

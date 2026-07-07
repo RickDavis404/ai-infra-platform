@@ -44,6 +44,10 @@ candidate_paths=(
   .claude/state
   .codex/auth.json
   .codex/*.local.*
+  .config/codex/auth.json
+  .config/codex/history*
+  .config/codex/sessions
+  .config/codex/log
   secrets/age
   secrets/shared.env
   secrets/*.dec
@@ -57,17 +61,21 @@ candidate_paths=(
 )
 shopt -u nullglob
 
+# A single file can match more than one candidate glob (e.g. secrets/shared.env
+# matches both its literal entry and secrets/*.env), so dedup with `sort -u`
+# (bash 3.2-safe; no associative array). Order is not significant — this is a
+# warning list.
 blocked_paths=()
-declare -A seen_blocked_paths=()
-for path in "${candidate_paths[@]}"; do
-  [[ -e "${path}" ]] || continue
-  [[ "${path}" == ".env.example" ]] && continue
-  [[ "${path}" == secrets/*.env.example ]] && continue
-  if [[ -z "${seen_blocked_paths[${path}]:-}" ]]; then
-    blocked_paths+=("${path}")
-    seen_blocked_paths["${path}"]=1
-  fi
-done
+while IFS= read -r path; do
+  [[ -n "${path}" ]] && blocked_paths+=("${path}")
+done < <(
+  for path in "${candidate_paths[@]}"; do
+    [[ -e "${path}" ]] || continue
+    [[ "${path}" == ".env.example" ]] && continue
+    [[ "${path}" == secrets/*.env.example ]] && continue
+    printf '%s\n' "${path}"
+  done | sort -u
+)
 
 if [[ "${#blocked_paths[@]}" -gt 0 ]]; then
   printf 'publication guard: remove or move these repo-local plaintext/runtime artifacts before publishing:\n' >&2

@@ -13,8 +13,9 @@ set -euo pipefail
 #       preserved but the next init run creates a fresh plaintext input file
 #
 # It does NOT touch committed config, fnox/age secret material, or the host PVC data
-# under .local/lima/<vm>/storage (delete that manually if a clean-slate rebuild of
-# persisted store data is intended).
+# under .local/lima/<vm>/storage. That data is preserved across a `down`->`up`
+# restart; it is wiped automatically the next time an instance is CREATED from bare
+# (lima:start's prepare_host_mounts), so a from-bare rebuild starts truly clean.
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
 REPO_ROOT="${MISE_PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}" >/dev/null 2>&1 && { git rev-parse --show-toplevel 2>/dev/null || pwd -P; })}"
@@ -70,7 +71,7 @@ main() {
   "${REPO_ROOT}/.config/mise/tasks/lima/delete.sh"
   host_cleanup
   info "teardown complete — cluster destroyed, local kubeconfig artifacts removed"
-  warn "fnox/age secret material, committed config, and .local/lima/<vm>/storage data are untouched"
+  warn "fnox/age secret material + committed config are untouched; .local/lima/<vm>/storage PVC data persists until the next from-bare instance create (lima:start), which wipes it"
 }
 
 main "$@"

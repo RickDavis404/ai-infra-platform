@@ -17,6 +17,11 @@ if [[ -f "$_common" ]]; then
   # shellcheck source=/dev/null
   source "$_common"
 fi
+_secrets_lib="${REPO_ROOT}/.config/mise/lib/secrets.sh"
+if [[ -f "$_secrets_lib" ]]; then
+  # shellcheck source=/dev/null
+  source "$_secrets_lib"
+fi
 if ! declare -F log_info >/dev/null 2>&1; then
   log_info() { printf '[info] %s\n' "$*" >&2; }
 fi
@@ -41,7 +46,25 @@ recipients_file="${REPO_ROOT}/secrets/.agerecipients"
 # Recipients are synced into the GITIGNORED repo-root fnox.local.toml (created here
 # when missing); the committed fnox.toml template is never modified.
 fnox_local="${REPO_ROOT}/fnox.local.toml"
-example_recipient="age1zrqtwyccjmjl9607qvthjm06c3vm3vu9egual3yzj33czh38nvkqw0wgvq"
+# Committed placeholder recipient to EXCLUDE from the operator's key set. Sourced from
+# lib/secrets.sh (single source of truth, kept identical to the committed fnox.toml /
+# secrets/.agerecipients); the literal fallback is a set -u safety net if the lib is
+# somehow unsourced. Previously hard-coded to a stale, rotated-out key (age1zrqtwy…)
+# that no longer matched the committed recipient — so the exclude/refuse guards were
+# dead code and every fresh keygen carried the committed recipient forward (leak).
+example_recipient="${AI_INFRA_PLACEHOLDER_AGE_RECIPIENT:-age1askmfmrkjf7ln3drgngdz2txt88nd4spgv52f6ekcu9hpv3gpy6skp79sf}"
+
+# Remove the repo-root/secrets mktemp scratch files on any exit. They are mv'd away on
+# success (rm is then a no-op); this trap is the leak backstop the .gitignore patterns
+# only defend against secondarily. Bash 3.2 + set -u safe via the :- guard.
+_keygen_tmpfiles=()
+_keygen_cleanup() {
+  local _t
+  for _t in "${_keygen_tmpfiles[@]:-}"; do
+    [[ -n "${_t}" ]] && rm -f -- "${_t}"
+  done
+}
+trap _keygen_cleanup EXIT
 
 toml_quote() {
   local s="$1"
@@ -73,6 +96,7 @@ sync_recipient_files() {
 
   local tmp
   tmp="$(mktemp "${REPO_ROOT}/secrets/.agerecipients.tmp.XXXXXX")"
+  _keygen_tmpfiles+=("${tmp}")
   {
     printf '# age public recipients (one per line). Committed; safe to publish.\n'
     printf '%s\n' "${recipients[@]}"
@@ -110,6 +134,7 @@ sync_recipient_files() {
 
   local replacement="age = { type = \"age\", recipients = [${joined}] }"
   tmp="$(mktemp "${REPO_ROOT}/fnox.local.toml.tmp.XXXXXX")"
+  _keygen_tmpfiles+=("${tmp}")
   if ! awk -v replacement="${replacement}" '
     /^\[providers\]$/ { in_providers = 1; print; next }
     /^\[/ && $0 != "[providers]" { in_providers = 0 }

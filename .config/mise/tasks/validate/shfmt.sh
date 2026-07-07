@@ -18,15 +18,23 @@ if ! command -v shfmt >/dev/null 2>&1; then
 fi
 
 # Collect every mise file-task (.config/mise/tasks/**/*.sh) plus the sourced helper
-# library (.config/mise/lib/*.sh). find avoids unsafe globstar dependence.
-mapfile -t scripts < <(find .config/mise/tasks -type f -name '*.sh' | sort)
+# library (.config/mise/lib/*.sh). find avoids unsafe globstar dependence. The
+# while/read append form is bash 3.2-safe (no mapfile).
+scripts=()
+while IFS= read -r script_path; do
+  scripts+=("${script_path}")
+done < <(find .config/mise/tasks -type f -name '*.sh' | sort)
 
 if [[ -d .config/mise/lib ]]; then
-  mapfile -t -O "${#scripts[@]}" scripts < <(find .config/mise/lib -type f -name '*.sh' | sort)
+  while IFS= read -r script_path; do
+    scripts+=("${script_path}")
+  done < <(find .config/mise/lib -type f -name '*.sh' | sort)
 fi
 
 if [[ -d setup ]]; then
-  mapfile -t -O "${#scripts[@]}" scripts < <(find setup -type f -name '*.sh' | sort)
+  while IFS= read -r script_path; do
+    scripts+=("${script_path}")
+  done < <(find setup -type f -name '*.sh' | sort)
 fi
 
 if [[ "${#scripts[@]}" -eq 0 ]]; then

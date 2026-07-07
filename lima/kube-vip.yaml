@@ -66,12 +66,25 @@ spec:
       value: "true"
     - name: vip_leasename
       value: plndr-cp-lock
+    # Leader-election lease timing = WIDENED past the k8s defaults (15/10/2) to 30/20/4.
+    # Root cause (diagnosed 2026-07-06): on a resource-constrained host the leader's
+    # lease-renew times out INSIDE kube-vip's client-side rate limiter ("client rate
+    # limiter Wait returned an error: context deadline exceeded") because the process is
+    # CPU-starved and descheduled for seconds at a time — the renew request never even
+    # leaves the process before the renewDeadline. It then drops leadership, deletes the
+    # VIP, and restarts, flapping the API VIP (host->VIP "no route to host" / "connection
+    # reset"). The durable fix is host headroom (fewer oversubscribed VMs) + the CPU
+    # request below (so kube-vip leaves BestEffort and gets a scheduled CPU share);
+    # 30/20/4 is added slack so a multi-second scheduling stall still fits inside the 20s
+    # renewDeadline. kube-vip v1.2.1 exposes NO client QPS/Burst knob, so widening the
+    # deadline is the only in-config lever. Tradeoff: ~30s (vs 15s) failover on real
+    # leader-node death.
     - name: vip_leaseduration
-      value: "5"
+      value: "30"
     - name: vip_renewdeadline
-      value: "3"
+      value: "20"
     - name: vip_retryperiod
-      value: "1"
+      value: "4"
     - name: address
       value: ${AI_INFRA_CP_VIP}
     - name: prometheus_server
@@ -92,7 +105,15 @@ spec:
     - name: metrics
       containerPort: 2112
       protocol: TCP
-    resources: {}
+    # kube-vip's default is BestEffort (no requests), so under host CPU contention it is
+    # the first pod CFS-deprioritizes — its leader-election renew loop then can't run
+    # inside the lease deadline and it flaps. A small CPU+memory REQUEST moves it to
+    # Burstable so the scheduler guarantees it a CPU share. NO cpu LIMIT on purpose: a
+    # limit re-introduces CFS throttling, the exact failure we are avoiding.
+    resources:
+      requests:
+        cpu: 200m
+        memory: 64Mi
     securityContext:
       capabilities:
         add:

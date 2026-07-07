@@ -27,7 +27,7 @@ fi
 
 readonly -a LABELS=(
   com.ai-infra.llama-swap
-  com.ai-infra.otelcol
+  com.ai-infra.alloy
   com.ai-infra.macmon-exporter
 )
 
