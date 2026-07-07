@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # values.yaml — seaweedfs/seaweedfs 4.34 (releaseName langfuse-seaweedfs, ns langfuse-data)
 #
 # SeaweedFS is the S3-compatible blob store for Langfuse event uploads, batch
@@ -5,7 +6,9 @@
 # biggest HA win from moving to three real nodes.
 #
 # Storage layout per pod (local-path): master 2Gi, filer 5Gi, volume 10Gi x3
-# (~15Gi usable under replication "001"; raise volume to 20Gi if media grows).
+# (~15Gi usable under replication "001" — one extra copy on a different volume
+# server; raise volume size if media grows). The AI_INFRA_PROFILE=lean overlay drops
+# to a single master/volume/filer with replication "000" (see seaweedfs/lean/).
 
 global:
   # No inter-pod mTLS: acceptable for the localhost-only lab inside the Cilium
@@ -40,8 +43,8 @@ master:
     type: emptyDir
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 25m
+      memory: 128Mi
     limits:
       memory: 512Mi
   # Per-component Prometheus annotations (global.podAnnotations is ignored by the
@@ -62,8 +65,8 @@ volume:
       maxVolumes: 0 # 0 => auto-configure the per-pod volume limit
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 25m
+      memory: 128Mi
     limits:
       memory: 1Gi
   podAnnotations:
@@ -91,8 +94,8 @@ filer:
     type: emptyDir
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 25m
+      memory: 128Mi
     limits:
       memory: 1Gi
   podAnnotations:

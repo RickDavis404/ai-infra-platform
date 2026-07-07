@@ -1,0 +1,51 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for the ClickHouse stores (CHI + CHK).
+#
+# It re-lists the base CR files by relative path (../keeper.yaml, ../chi.yaml) rather
+# than referencing the parent DIRECTORY: a kustomization cannot use a base that
+# CONTAINS it (containment cycle). File references above this root are allowed because
+# every render path passes `--load-restrictor LoadRestrictionsNone`. Keep the list and
+# `namespace:` in lock-step with ../kustomization.yaml.
+#
+# Reverts both custom resources to a single node for the 16GiB single-host profile:
+#   - ClickHouseInstallation langfuse-ch: clusters[0].layout.replicasCount 2 -> 1
+#   - ClickHouseKeeperInstallation langfuse-keeper: clusters[0].layout.replicasCount
+#     3 -> 1  (a valid single-node Raft; 1 removes the new-replica catch-up wait that
+#     can wedge a from-bare CHI — see ../chi.yaml header)
+#   - CHI pod memory request 1Gi -> 512Mi: the HA base floors the request at
+#     ClickHouse's real ~1GiB working set (meltdown fix — right for the no-swap
+#     8GiB HA nodes), but on a 5GiB lean node (~3.6GiB Allocatable after
+#     systemReserved) that floor crowds out the rest of the stack. Lean =
+#     schedulable low requests + systemReserved honesty + host swap for the
+#     runtime overcommit. The 4Gi LIMIT is inherited unchanged.
+#
+# JSON-6902 with an explicit list index is required: replicasCount is nested inside
+# the clusters[] list, which a strategic/merge patch cannot address on a CRD.
+namespace: langfuse-data
+
+resources:
+  - ../keeper.yaml
+  - ../chi.yaml
+
+patches:
+  - target:
+      kind: ClickHouseInstallation
+      name: langfuse-ch
+    patch: |-
+      - op: replace
+        path: /spec/configuration/clusters/0/layout/replicasCount
+        value: 1
+      # podTemplates/0 is the sole `langfuse-ch-pod` template, containers/0 the
+      # sole `clickhouse` container. Request only — the 4Gi limit stays.
+      - op: replace
+        path: /spec/templates/podTemplates/0/spec/containers/0/resources/requests/memory
+        value: 512Mi
+  - target:
+      kind: ClickHouseKeeperInstallation
+      name: langfuse-keeper
+    patch: |-
+      - op: replace
+        path: /spec/configuration/clusters/0/layout/replicasCount
+        value: 1

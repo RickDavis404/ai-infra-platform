@@ -201,6 +201,7 @@ data:
             "gpt-5.5",
             "gpt-5.4",
             "gpt-5.4-mini",
+            "gpt-5.3-codex",
             "gpt-5.3-codex-spark",
             "codex-auto-review",
         )
@@ -220,6 +221,12 @@ data:
         "accept",
     )
 
+    _CHATGPT_NO_IMAGE_GENERATION_MODELS = frozenset(
+        base if not pfx else f"{pfx}{base}"
+        for base in ("gpt-5.3-codex", "gpt-5.3-codex-spark")
+        for pfx in ("", "chatgpt/")
+    )
+
 
     def _is_passthrough_model(model) -> bool:
         if not model:
@@ -230,6 +237,61 @@ data:
         # Be lenient about a stray provider prefix.
         short = name.split("/", 1)[-1]
         return short in _CHATGPT_PASSTHROUGH_MODELS
+
+
+    def _drop_unsupported_image_generation_tool(data, model) -> None:
+        if not isinstance(data, dict) or not model:
+            return
+        name = str(model)
+        short = name.split("/", 1)[-1]
+        if name not in _CHATGPT_NO_IMAGE_GENERATION_MODELS and short not in (
+            _CHATGPT_NO_IMAGE_GENERATION_MODELS
+        ):
+            return
+        tools = data.get("tools")
+        if not isinstance(tools, list):
+            return
+        filtered = [
+            tool
+            for tool in tools
+            if not (
+                isinstance(tool, dict)
+                and str(tool.get("type", "")).lower() == "image_generation"
+            )
+        ]
+        if len(filtered) != len(tools):
+            if filtered:
+                data["tools"] = filtered
+            else:
+                data.pop("tools", None)
+            _log.info(
+                "ChatGPT passthrough: stripped unsupported image_generation tool for %s.",
+                model,
+            )
+
+
+    def _drop_unsupported_reasoning_summary(data, model) -> None:
+        if not isinstance(data, dict) or not model:
+            return
+        name = str(model)
+        short = name.split("/", 1)[-1]
+        if name not in _CHATGPT_NO_IMAGE_GENERATION_MODELS and short not in (
+            _CHATGPT_NO_IMAGE_GENERATION_MODELS
+        ):
+            return
+        reasoning = data.get("reasoning")
+        if not isinstance(reasoning, dict) or "summary" not in reasoning:
+            return
+        reasoning = dict(reasoning)
+        reasoning.pop("summary", None)
+        if reasoning:
+            data["reasoning"] = reasoning
+        else:
+            data.pop("reasoning", None)
+        _log.info(
+            "ChatGPT passthrough: stripped unsupported reasoning.summary for %s.",
+            model,
+        )
 
 
     def _find_forwarded_authorization(headers):
@@ -481,6 +543,8 @@ data:
 
                 try:
                     model = data.get("model") if isinstance(data, dict) else None
+                    _drop_unsupported_image_generation_tool(data, model)
+                    _drop_unsupported_reasoning_summary(data, model)
                     if not _is_passthrough_model(model):
                         return
                     # The `headers` passed here are ALREADY cleaned by clean_headers(),

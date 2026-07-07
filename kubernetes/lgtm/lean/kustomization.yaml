@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# lgtm (AI_INFRA_PROFILE=lean) — the lean aggregate that mirrors ../kustomization.yaml
+# but swaps grafana, loki, prometheus and alloy for their co-located lean/ overlays
+# (grafana/loki: single-replica posture; prometheus/alloy: memory-request reverts of
+# the HA meltdown-fix floors so the stack bin-packs on 5GiB lean nodes). The
+# profile-invariant components (otel-collector, tempo, dashboards) stay on their HA
+# bases. apply.sh applies this instead of the HA base when AI_INFRA_PROFILE=lean (via
+# profile_target lgtm -> lgtm/lean).
+#
+# `../<component>` are kustomize DIRECTORY references (allowed under the default load
+# restrictor); the loki/prometheus/alloy lean children additionally read
+# ../values*.yaml via Helm, which is why every render path passes
+# --load-restrictor LoadRestrictionsNone.
+namespace: lgtm
+
+resources:
+  - ../otel-collector
+  - ../prometheus/lean
+  - ../alloy/lean
+  - ../grafana/lean
+  - ../loki/lean
+  - ../tempo
+  - ../dashboards

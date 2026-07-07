@@ -1,0 +1,32 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for Loki.
+#
+# DELTA ONLY. Layered over values.yaml by the lean/ kustomization (helm merges
+# -f ../values.yaml -f ../values-lean.yaml). Everything not named here (S3 storage,
+# schema, limits, retention/compactor, disabled distributed targets) is inherited
+# from the HA values.yaml — keep this file to the single-host deltas only.
+#
+# Coupled set (planning §5 — Loki): replication_factor and the write replica count
+# move together (RF 2 needs >= 2 write pods for quorum). The lean profile drops RF to
+# 1 and every SimpleScalable target to a single replica. The distributed-mode targets
+# stay at 0 (set in the base) — the chart errors if two deployment modes are non-zero.
+#
+# backend memory request reverts the HA meltdown-fix FLOOR (512Mi, right for the
+# no-swap 8GiB HA nodes) back to the schedulable 256Mi low: a 5GiB lean node keeps
+# only ~3.6GiB Allocatable after systemReserved, so lean = low requests +
+# systemReserved honesty + host swap for the runtime overcommit. The helm
+# deep-merge keeps the base cpu request and the 1Gi limit.
+loki:
+  commonConfig:
+    replication_factor: 1
+
+write:
+  replicas: 1
+read:
+  replicas: 1
+backend:
+  replicas: 1
+  resources:
+    requests:
+      memory: 256Mi
+gateway:
+  replicas: 1

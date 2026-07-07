@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # grafana-pg.yaml — CloudNativePG Cluster backing Grafana's database (ns lgtm).
 #
 # Grafana's database holds only RECONSTRUCTIBLE UI state: users, org settings,
@@ -25,8 +26,12 @@ metadata:
   name: grafana-pg
   namespace: lgtm
 spec:
-  # 2 = primary + 1 async standby (lighter than the 3-instance app DBs on purpose;
-  # see the header — Grafana's DB is reconstructible UI state, not a store of record).
+  # HA DEFAULT: 2 instances = primary + 1 ASYNC standby (see the header — Grafana's
+  # DB is reconstructible UI state, so async replication is deliberate; no
+  # synchronous block, unlike the 3-instance quorum langfuse-pg / litellm-pg). The
+  # AI_INFRA_PROFILE=lean overlay patches this to instances 1 (+ enablePDB:false) for
+  # the 16GiB single-host profile — see grafana/lean/. With 2 instances the operator
+  # keeps its primary PDB (minAvailable 1); a node drain still leaves the standby.
   instances: 2
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:233d7414ff5c1e4951e85389fb4bec31c18f35be1d7d47eea5aa296a46af0b5f
   # Pinned tag: skip the re-pull on idempotent re-apply so repeated runs don't hit
@@ -52,7 +57,7 @@ spec:
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: required # spread the 2 instances across distinct nodes
   resources:
-    requests: { cpu: 100m, memory: 256Mi }
+    requests: { cpu: 50m, memory: 256Mi }
     limits: { memory: 512Mi }
   monitoring:
     enablePodMonitor: true # CNPG operator emits a PodMonitor (:9187 /metrics); Alloy discovers all PodMonitors cluster-wide

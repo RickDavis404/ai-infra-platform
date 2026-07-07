@@ -1,0 +1,49 @@
+# startupProbe hardening patch (strategic merge) for the langfuse-web Deployment.
+#
+# WHY: on a FRESH bring-up the langfuse container does one-time cold-start work
+# before it can serve traffic — Prisma (Postgres) schema migrations plus (driven
+# by the worker) 34 ClickHouse `ON CLUSTER ... alter_sync=2` migrations, THEN ~4 min
+# of app init (ClickHouse compat checks, langfuse MCP feature registration, cache
+# warmup) before /api/public/health first answers. MEASURED on constrained
+# Apple-Silicon Lima hardware with a fresh DB: ~10 min end to end (migrations ~6 min +
+# app init ~4.3 min) — NOT the ~60-75s an earlier estimate assumed. The one-time
+# first-boot budget below is sized to cover this in a SINGLE startup window (a smaller
+# budget SIGTERMs mid-migration each cycle; the pod only converges after several
+# lucky restarts, and `mise run up`'s rollout wait times out first).
+# The pinned chart (1.5.37) templates only livenessProbe
+# + readinessProbe and has NO startupProbe (verified in
+# charts/.../templates/web/deployment.yaml). With no startupProbe the livenessProbe
+# starts probing during that window and SIGTERMs the pod mid-migration, so
+# golang-migrate leaves a "Dirty database" and the deployment crashloops forever.
+#
+# A startupProbe suspends BOTH liveness and readiness until the app first answers,
+# giving the slow cold start a 1200s / 20-min budget (periodSeconds 10 *
+# failureThreshold 120; timeoutSeconds 10 so a health check can exceed 5s while the
+# Node event loop is busy during init) instead of the ~47s the default livenessProbe
+# allows — sized from the measured ~10-min first boot with margin. Verified live on the mini
+# via `kubectl patch` — adding this startupProbe let migrations complete and both
+# langfuse deployments reached Ready. That live patch is ephemeral (a rebuild /
+# helm sync reverts it); this patch persists it in the repo.
+#
+# Path/port/scheme match the chart's web livenessProbe (GET /api/public/health on
+# the named `http` container port). Container name is `langfuse-web`
+# (`.Chart.Name`-web). Targeted in kustomization.yaml by kind: Deployment +
+# name: langfuse-web.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: langfuse-web
+  namespace: langfuse
+spec:
+  template:
+    spec:
+      containers:
+        - name: langfuse-web
+          startupProbe:
+            httpGet:
+              path: /api/public/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 120

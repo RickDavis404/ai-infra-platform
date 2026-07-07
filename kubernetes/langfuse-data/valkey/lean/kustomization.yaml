@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for Valkey (langfuse BullMQ queue + cache).
+#
+# Valkey's lean delta lives partly INSIDE the Helm-rendered config (minReplicasToWrite
+# becomes a valkey.conf directive), so this cannot be a post-render field patch — the
+# helmChart block is RE-DECLARED here and re-inflated with the base values plus the
+# lean overrides layered on top:
+#   valuesFile: ../values.yaml              (the HA base values)
+#   additionalValuesFiles: [../values-lean.yaml]  (single-host deltas + PDB null trick)
+#
+# The `../` value-file references sit ABOVE this kustomization's root, which the
+# default kustomize load restrictor rejects — so every render path passes
+# `--load-restrictor LoadRestrictionsNone` (apply.sh / render-all.sh / diff.sh /
+# down.sh). The namespace-backfill patch is re-listed from the base kustomization
+# because a re-declared helmChart does not inherit the base's patches.
+#
+# Chart pin MUST equal the base (valkey 0.10.0). A Renovate bump to ../kustomization.yaml
+# will NOT update this copy — keep them in lock-step (planning §5 helm-version drift).
+namespace: langfuse-data
+
+helmCharts:
+- name: valkey
+  repo: https://valkey.io/valkey-helm
+  version: 0.10.0
+  releaseName: langfuse-valkey
+  namespace: langfuse-data
+  valuesFile: ../values.yaml
+  additionalValuesFiles:
+  - ../values-lean.yaml
+
+# Namespace backfill for helm-inflated objects (the valkey-io chart templates emit no
+# metadata.namespace; see ../kustomization.yaml for the full rationale).
+patches:
+- patch: |-
+    - op: add
+      path: /metadata/namespace
+      value: langfuse-data
+  target:
+    annotationSelector: ""
+
+# Drop the valkey chart's `helm.sh/hook: test` Pod (langfuse-valkey-test-auth-existing).
+# kustomize renders Helm templates blind to hook annotations, so this TEST pod becomes a
+# real Pod in the applied stream; on the packed single lean node it never schedules and
+# sits Pending forever (it is a chart self-test, not a service). The valkey-io chart
+# 0.10.0 exposes NO value to disable it — the test Pod is gated only on auth.enabled +
+# auth.usersExistingSecret, which the real workload requires — so strip it surgically
+# here. Lean-only: the HA base (../) is byte-identical and still renders the pod (where
+# it schedules + completes on the 3-node cluster).
+- patch: |-
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: langfuse-valkey-test-auth-existing
+    $patch: delete
+  target:
+    kind: Pod
+    name: langfuse-valkey-test-auth-existing

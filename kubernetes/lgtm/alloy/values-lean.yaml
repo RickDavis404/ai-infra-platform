@@ -1,0 +1,23 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for Grafana Alloy.
+#
+# DELTA ONLY. Layered over values.yaml by lean/kustomization.yaml
+# (valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]).
+# Everything else (single-Deployment controller, SM/PM discovery config, River
+# pipeline, limits) is inherited from the HA values.yaml — keep this file to the
+# single-host deltas only.
+#
+# The memory request RAISES the HA floor (256Mi) to 512Mi. Alloy's real working
+# set on this cluster — full SM/PM discovery + remote_write WAL + the loki.* log
+# pipeline — sits around ~750Mi, and an earlier lean revision that dropped the
+# request to a "schedulable" 128Mi made Alloy the #2 usage-over-request eviction
+# victim (right behind litellm) in the 2026-07 lean eviction loop: kubelet ranks
+# pods exceeding their request first, so a token request repeatedly sacrificed the
+# whole observability pipeline under node pressure. 512Mi keeps placement honest
+# on the lean node (a single 12GiB VM, ~10.7GiB Allocatable after systemReserved
+# 1280Mi + evictionHard 300Mi) while fitting alongside the litellm/store floors. The
+# helm deep-merge keeps the base cpu request and the 768Mi limit (cold-start OOM
+# headroom unchanged).
+alloy:
+  resources:
+    requests:
+      memory: 512Mi

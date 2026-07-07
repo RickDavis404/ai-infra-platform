@@ -134,7 +134,7 @@ spec:
             # Codex routes via the chatgpt/ passthrough plus local mac-local/* models.
             - name: KEY_MODELS
               value: >-
-                ["gpt-5.4", "gpt-5.5", "mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf",
+                ["gpt-5.3-codex", "gpt-5.4", "gpt-5.5", "mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf",
                 "mac-local/lmstudio-community/gemma-4-e2b-it-q8-0-gguf",
                 "mac-local/unsloth/qwen3.5-4b-q4-k-s-gguf",
                 "mac-local/lmstudio-community/llama-3.2-1b-instruct-q8-0-gguf",

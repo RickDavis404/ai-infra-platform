@@ -26,7 +26,7 @@ crds:
 # Minimal-but-bounded operator footprint (out of BestEffort QoS).
 resources:
   requests:
-    cpu: 100m
+    cpu: 25m
     memory: 200Mi
   limits:
     memory: 256Mi

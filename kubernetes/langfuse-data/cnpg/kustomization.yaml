@@ -5,5 +5,14 @@ kind: Kustomization
 # (kubernetes/operators/cnpg) must be Ready before these apply. Each Cluster lives
 # in its own namespace (langfuse-pg → langfuse-data, litellm-pg → litellm).
 resources:
+  # ai-infra-gateway PriorityClass (cluster-scoped). Owned by kubernetes/litellm but
+  # applied HERE as well: litellm-pg.yaml below references it via
+  # spec.priorityClassName, and this stores phase applies BEFORE the litellm phase
+  # (apply.sh step 4 vs 7) — pod admission rejects any pod whose named PriorityClass
+  # does not exist yet, which would stall the operator's initdb/instance pods on a
+  # from-bare bring-up. Identical bytes from both overlays, so the duplicate
+  # server-side applies converge. The out-of-root file ref relies on the
+  # `--load-restrictor LoadRestrictionsNone` every render path already passes.
+  - ../../litellm/priorityclass.yaml
   - langfuse-pg.yaml
   - litellm-pg.yaml

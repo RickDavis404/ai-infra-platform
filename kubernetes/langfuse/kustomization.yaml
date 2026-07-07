@@ -33,3 +33,19 @@ patches:
     target:
       kind: Service
       name: langfuse-web
+  # Inject a startupProbe into the langfuse-web and langfuse-worker Deployments.
+  # The pinned chart (1.5.37) templates only liveness/readiness probes and has no
+  # startupProbe, so the one-time Prisma + 34x ClickHouse migration + app init on a
+  # fresh bring-up (MEASURED ~10 min on constrained Apple-Silicon Lima hardware)
+  # outruns the default liveness kill window (~47s) -> SIGTERM mid-migration ->
+  # golang-migrate "Dirty database" -> permanent crashloop. The startupProbe suspends
+  # liveness/readiness until the app is up (20-min budget: failureThreshold 120 x 10s).
+  # Verified live on the mini via `kubectl patch`; see the patch file headers.
+  - path: patches/startup-probe-web.yaml
+    target:
+      kind: Deployment
+      name: langfuse-web
+  - path: patches/startup-probe-worker.yaml
+    target:
+      kind: Deployment
+      name: langfuse-worker

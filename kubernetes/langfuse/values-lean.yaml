@@ -1,0 +1,40 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for Langfuse web + worker.
+#
+# DELTA ONLY. Layered over values.yaml by lean/kustomization.yaml
+# (valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]).
+# Everything else (externalized stores, secrets, bootstrap env, anti-affinity,
+# limits, image pin) is inherited from the HA values.yaml — keep this to the
+# single-host deltas only.
+#
+# web/worker drop to 1 replica; each PDB flips from the HA minAvailable:1 to
+# maxUnavailable:1 so a node drain can still evict the lone replica. The explicit
+# `minAvailable: null` DELETES the HA key during the helm deep-merge so the rendered
+# PDB carries only maxUnavailable (a PDB may not set both). The langfuse chart honours
+# pdb.minAvailable / pdb.maxUnavailable directly, so no ha.yaml JSON patch is needed
+# in the lean overlay (unlike the HA base).
+#
+# Memory requests revert the HA meltdown-fix FLOORS (512Mi = the real ~0.5GiB Node
+# working set, right for the no-swap 8GiB HA nodes) back to the schedulable 256Mi
+# lows: a 5GiB lean node keeps only ~3.6GiB Allocatable after systemReserved, so
+# lean = low requests + systemReserved honesty + host swap for the runtime
+# overcommit. The helm deep-merge keeps the base cpu request and limits.
+langfuse:
+  replicas: 1
+  web:
+    replicas: 1
+    resources:
+      requests:
+        memory: 256Mi
+    pdb:
+      create: true
+      minAvailable: null
+      maxUnavailable: 1
+  worker:
+    replicas: 1
+    resources:
+      requests:
+        memory: 256Mi
+    pdb:
+      create: true
+      minAvailable: null
+      maxUnavailable: 1

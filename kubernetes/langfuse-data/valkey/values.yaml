@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # values.yaml — valkey-io/valkey 0.10.0 (releaseName langfuse-valkey, ns langfuse-data)
 #
 # Valkey is Langfuse's BullMQ job queue + ephemeral cache, NOT an authoritative
@@ -59,7 +60,7 @@ service:
 # --- Resources (spec §6.2 HA table) ---------------------------------------------
 resources:
   requests:
-    cpu: 50m
+    cpu: 25m
     memory: 64Mi
   limits:
     memory: 320Mi # headroom above the 256mb maxmemory cap
@@ -75,9 +76,13 @@ affinity:
         topologyKey: kubernetes.io/hostname
 
 # --- PodDisruptionBudget (spec §6.2: Valkey minAvailable 2) ----------------------
+# HA DEFAULT: minAvailable 2 keeps a write-quorum (primary + 1 replica) across the
+# 3 pods during voluntary disruptions. The AI_INFRA_PROFILE=lean overlay swaps this
+# for maxUnavailable 1 (via values-lean.yaml: minAvailable:null + maxUnavailable:1)
+# to fit the single-pod lean topology — see valkey/lean/.
 podDisruptionBudget:
   enabled: true
-  minAvailable: 2 # keep a write-quorum (primary + 1 replica) during voluntary disruptions
+  minAvailable: 2
 
 # --- Prometheus metrics exporter sidecar ----------------------------------------
 # The redis_exporter sidecar exposes metrics on :9121; the chart's ServiceMonitor

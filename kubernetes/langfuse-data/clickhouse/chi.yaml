@@ -1,10 +1,25 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # ClickHouseInstallation (CHI) — Langfuse analytics/event store.
 #
-# Topology: shardsCount 1 / replicasCount 2 → ReplicatedMergeTree across two
-# ClickHouse replicas. Quorum/coordination is delegated to the 3-node
-# ClickHouseKeeperInstallation (see keeper.yaml), so two data copies suffice; a
-# third would only waste storage. Langfuse migrations create Replicated engines
-# when a cluster macro is present (clusterEnabled in the Langfuse values).
+# Topology: shardsCount 1 / replicasCount 2 — the HA DEFAULT: two ClickHouse
+# replicas placed on distinct nodes (podAntiAffinity below). The
+# `AI_INFRA_PROFILE=lean` overlay patches this back to replicasCount 1 for the
+# 16GiB single-host profile (see clickhouse/lean/). Coordination is delegated to the
+# ClickHouseKeeperInstallation (see keeper.yaml) so Langfuse's ReplicatedMergeTree
+# DDL (ON CLUSTER default) works. Two replicas let a single node loss keep the event
+# store serving — the biggest ClickHouse HA win of the 3-node move.
+#
+# Cold-start caveat (why the storage wipe matters): with 2 replicas the Altinity
+# operator waits for the NEW replica to catch up before marking the CHI Completed —
+# and if a replica inherits STALE on-disk data against a fresh (empty) Keeper it
+# attaches its tables READONLY with an ever-growing absolute_delay, so that wait
+# never returns and the CHI is never Completed (the 2026-07-06 from-bare bring-up
+# stall). The durable cure is the storage-wipe-on-instance-create in lima/start.sh,
+# which every from-bare create runs so both replicas start from an empty disk that
+# matches the fresh Keeper. Langfuse migrations create Replicated engines when a
+# cluster macro is present (clusterEnabled in the Langfuse values); the
+# 1-shard/2-replica `default` cluster satisfies `ON CLUSTER default` uniformly and
+# cannot hit the cross-replica schema_migrations split-brain described below.
 #
 # Auth/network: the `default` user password is sourced from the
 # `langfuse-shared-passwords` Secret (key `clickhouse-password`, fnox+age). The
@@ -32,8 +47,9 @@ spec:
       # follow-up `SELECT ... FROM schema_migrations` then lands on the other replica
       # and fails with `code: 60 Unknown table 'schema_migrations'`. Naming our
       # cluster `default` makes the operator emit a `default` remote_servers entry
-      # spanning BOTH replicas, so `ON CLUSTER default` (and the Replicated* DDL)
-      # apply uniformly. DNS becomes chi-langfuse-ch-default-0-{0,1}.
+      # spanning the cluster host(s), so `ON CLUSTER default` (and the Replicated*
+      # DDL) apply uniformly. DNS is chi-langfuse-ch-default-0-{0,1} (two replicas;
+      # the lean overlay renders only chi-langfuse-ch-default-0-0).
       - name: default
         layout:
           shardsCount: 1
@@ -132,12 +148,15 @@ spec:
               ports:
                 - name: prometheus
                   containerPort: 9363
+              # Memory request = ClickHouse's real idle/steady working set (~1GiB)
+              # so the scheduler counts it; the limit stays <= the smallest node so
+              # a runaway query OOMs this container instead of eating the node.
               resources:
                 requests:
-                  cpu: 500m
-                  memory: 2Gi
+                  cpu: 50m
+                  memory: 1Gi
                 limits:
-                  memory: 8Gi
+                  memory: 4Gi
     volumeClaimTemplates:
       - name: langfuse-ch-data
         spec:

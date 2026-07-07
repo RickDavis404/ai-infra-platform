@@ -1,6 +1,9 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # grafana/grafana 12.7.1 (grafana-community.github.io/helm-charts)
 # UI + datasource/dashboard provisioning. Login-required (no anonymous access).
 # 2 replicas, headless service for unified-alerting HA gossip, CNPG-backed DB.
+# HA DEFAULT: replicas 2 (the AI_INFRA_PROFILE=lean overlay patches this to 1 — see
+# grafana/lean/).
 
 replicas: 2
 
@@ -41,8 +44,10 @@ serviceMonitor:
 
 resources:
   requests:
-    cpu: 100m
-    memory: 128Mi
+    cpu: 25m
+    # Realistic floor: Grafana resides ~200-250Mi with its plugin/datasource set
+    # loaded — count it in scheduling instead of packing it as a 128Mi token.
+    memory: 256Mi
   limits:
     memory: 512Mi
 

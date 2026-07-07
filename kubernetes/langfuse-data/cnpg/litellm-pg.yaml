@@ -1,10 +1,24 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: litellm-pg
   namespace: litellm
 spec:
+  # HA DEFAULT: 3-instance quorum (primary + 2 standbys) spread one-per-node by the
+  # required pod anti-affinity below. The AI_INFRA_PROFILE=lean overlay patches this
+  # to instances 1 (+ enablePDB:false, - synchronous) for the 16GiB single-host
+  # profile — see cnpg/lean/. The CNPG operator emits the primary PDB (minAvailable 1)
+  # by default; with 3 instances a node drain still leaves a quorum, so it is kept
+  # (enablePDB:false is a LEAN-only override).
   instances: 3
+  # Gateway-plane eviction/preemption shield (kubernetes/litellm/priorityclass.yaml —
+  # applied by this cnpg kustomization too, so the class exists before the operator
+  # creates any pod here). The gateway is DOWN without its Postgres, so litellm-pg
+  # carries the same priority as the litellm Deployment: schedulable via preemption,
+  # last-in-line for kubelet memory eviction. CNPG propagates spec.priorityClassName
+  # to every generated pod (instances + initdb jobs).
+  priorityClassName: ai-infra-gateway
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:233d7414ff5c1e4951e85389fb4bec31c18f35be1d7d47eea5aa296a46af0b5f
   # Pinned tag: skip the re-pull on idempotent re-apply so repeated runs don't hit
   # the registry's anonymous pull-rate limit (HTTP 429).
@@ -29,9 +43,14 @@ spec:
   postgresql:
     parameters:
       timezone: UTC                 # keep UTC platform-wide for consistent timestamps
+    # Quorum-synchronous replication: every commit must be acknowledged by at least
+    # `number` of the (instances-1) standbys before the client sees success (RPO 0 on
+    # a single node loss). REQUIRES instances >= 3 (number < instances-1); the
+    # AI_INFRA_PROFILE=lean overlay REMOVES this block when it drops to instances 1
+    # (with a lone primary and no standby, a synchronous commit would block forever).
     synchronous:
       method: any
-      number: 1                     # quorum: 1 of 2 standbys must confirm (number < instances-1)
+      number: 1
   bootstrap:
     initdb:
       database: litellm
@@ -45,7 +64,7 @@ spec:
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: required   # spread the 3 instances across the 3 nodes
   resources:
-    requests: { cpu: 250m, memory: 512Mi }
+    requests: { cpu: 50m, memory: 256Mi }
     limits:   { memory: 1Gi }
   monitoring:
     enablePodMonitor: true          # CNPG operator emits a PodMonitor (:9187 /metrics); Alloy discovers all PodMonitors cluster-wide

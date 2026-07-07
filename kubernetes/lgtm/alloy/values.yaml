@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # Grafana Alloy — meta-observability logs + cluster metrics agent. Chart
 # grafana/alloy 1.10.0 (image tag v1.17.1), namespace lgtm. Rendered via `kustomize build --enable-helm`.
 # Runs as a SINGLE-replica Deployment (no clustering) — both jobs are API-based,
@@ -98,8 +99,8 @@ alloy:
       # Prometheus, AND the loki.* log pipeline. At cold start all three ramp at
       # once (initial scrape storm + WAL backlog), so the request must cover the
       # discovery+remote_write working set and the limit must leave OOM headroom.
-      # 100m / 256Mi request, 768Mi limit; steady state sits well under request.
-      cpu: 100m
+      # 50m / 256Mi request, 768Mi limit; steady state sits well under request.
+      cpu: 50m
       memory: 256Mi
     limits:
       memory: 768Mi

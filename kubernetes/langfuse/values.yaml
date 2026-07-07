@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # values.yaml — chart langfuse/langfuse 1.5.37 (pinned in kustomization.yaml)
 #
 # Langfuse v3 split architecture: langfuse-web (Next.js UI + API/ingestion) and
@@ -8,8 +9,11 @@
 # Secret `langfuse-app-secrets` (generated from fnox+age via secretGenerator,
 # disableNameSuffixHash: true). No real secret values appear in this repo.
 #
-# HA: web/worker each run 2 replicas with a PDB minAvailable: 1 (see §6.2 / §12.1).
-# Anti-affinity (required, hostname) and the PDBs are reconciled by patches/ha.yaml.
+# HA DEFAULT: web/worker each run 2 replicas with a PDB minAvailable: 1 (keeps one
+# pod up through a voluntary disruption) — see §6.2 / §12.1. Anti-affinity (required,
+# hostname) spreads each tier's 2 replicas across distinct nodes, and the PDB field
+# is reconciled by patches/ha.yaml. The AI_INFRA_PROFILE=lean overlay patches web +
+# worker back to 1 replica with a PDB maxUnavailable: 1 (see langfuse/lean/).
 #
 # Resources follow §12.1: requests 200m / 512Mi, limits 1500m / 2Gi (per replica).
 
@@ -58,7 +62,9 @@ langfuse:
       minAvailable: 1
     resources:
       requests:
-        cpu: 200m
+        cpu: 25m
+        # Realistic floor: the Node process resides ~0.5GiB — count it in
+        # scheduling rather than let placement drift past real node capacity.
         memory: 512Mi
       limits:
         cpu: 1500m
@@ -67,6 +73,9 @@ langfuse:
     # so a single node loss never drops the whole web tier (HA matrix §6.2). The
     # chart exposes per-deployment affinity under web.pod.affinity.
     pod:
+      additionalEnv:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=1536"
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -84,7 +93,9 @@ langfuse:
       minAvailable: 1
     resources:
       requests:
-        cpu: 200m
+        cpu: 25m
+        # Realistic floor: the Node process resides ~0.5GiB — count it in
+        # scheduling rather than let placement drift past real node capacity.
         memory: 512Mi
       limits:
         cpu: 1500m
@@ -93,6 +104,9 @@ langfuse:
     # nodes so a single node loss never drops the whole worker tier (HA matrix §6.2).
     # The chart exposes per-deployment affinity under worker.pod.affinity.
     pod:
+      additionalEnv:
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=1536"
       affinity:
         podAntiAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
@@ -169,6 +183,8 @@ langfuse:
     # since a duplicate env key breaks `kubectl apply --server-side`.
     - name: AUTH_TRUST_HOST
       value: "true"
+    - name: LANGFUSE_MCP_ALLOWED_HOSTS
+      value: "192.168.105.201:3000,http://192.168.105.201:3000"
     # ClickHouse lightweight-delete/update enablement: Langfuse's ClickHouse
     # maintenance (retention/GDPR deletes, projection updates) uses lightweight
     # DELETE/UPDATE mutations instead of heavy ALTER ... rewrites.

@@ -1,6 +1,9 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # loki/loki 18.3.0 (grafana-community.github.io/helm-charts)
-# SimpleScalable on SeaweedFS S3. read/write/backend = 2; RF 2; tsdb/v13.
+# SimpleScalable on SeaweedFS S3. read/write/backend/gateway = 2; RF 2; tsdb/v13.
 # 7-day retention enforced by the compactor on the backend target.
+# HA DEFAULT here; the AI_INFRA_PROFILE=lean overlay (loki/lean/, via
+# values-lean.yaml) drops RF and every target to 1.
 
 # Enable env-var expansion in the rendered config so S3 credentials come from a
 # Secret (env) rather than committed literals.
@@ -85,7 +88,7 @@ write:
   replicas: 2
   resources:
     requests:
-      cpu: 100m
+      cpu: 25m
       memory: 256Mi
     limits:
       memory: 1Gi
@@ -101,7 +104,7 @@ read:
   replicas: 2
   resources:
     requests:
-      cpu: 100m
+      cpu: 25m
       memory: 256Mi
     limits:
       memory: 1Gi
@@ -117,8 +120,10 @@ backend:
   replicas: 2
   resources:
     requests:
-      cpu: 100m
-      memory: 256Mi
+      cpu: 25m
+      # Backend (compactor/index-gateway/ruler) carries the heaviest steady working
+      # set of the three targets — floor it at 512Mi; write/read stay at 256Mi.
+      memory: 512Mi
     limits:
       memory: 1Gi
   affinity:
