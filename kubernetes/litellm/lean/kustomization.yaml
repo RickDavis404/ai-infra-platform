@@ -1,0 +1,65 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for the LiteLLM gateway (raw manifests, no Helm).
+#
+# It re-lists the base manifests by relative path rather than referencing the parent
+# DIRECTORY (a kustomization cannot use a base that CONTAINS it — containment cycle).
+# File references above this root are allowed because every render path passes
+# `--load-restrictor LoadRestrictionsNone`. The `resources:` and `commonLabels:` MUST
+# stay in lock-step with ../kustomization.yaml (commonLabels feeds the Deployment /
+# Service / PDB label+selector set, so omitting it would break selection).
+#
+# Reverts to the single-host posture:
+#   - Deployment litellm: replicas 2 -> 1
+#   - PodDisruptionBudget litellm: swap the HA minAvailable:1 for maxUnavailable:1 so
+#     a node drain can still evict the lone replica.
+#
+# The base memory REQUEST (1536Mi) is inherited UNCHANGED — deliberately. An earlier
+# lean revision patched it down to 512Mi to fit the old 5GiB/1280Mi-systemReserved
+# node math, but that decorrelated scheduling from litellm's real ~1.1-1.9GiB usage:
+# the scheduler placed it blind onto already-full nodes, and kubelet's eviction
+# ranking targets usage-over-request pods FIRST, so under node memory pressure the
+# gateway was ALWAYS the first pod evicted (observed 2026-07 eviction loop). The lean
+# profile is now a SINGLE 12GiB node (12288Mi - 1280Mi systemReserved - 300Mi
+# evictionHard ≈ 10.7GiB Allocatable; see .config/mise/tasks/lima/start.sh and
+# lima/templates/k8s-cilium.yaml), so the honest request fits with ample headroom.
+# The 4Gi LIMIT is inherited unchanged (<= the node, so a runaway still OOMs its own
+# cgroup instead of the node), and the ai-infra-gateway PriorityClass
+# (../priorityclass.yaml) shields the pod from preemption/eviction tie-breaks.
+#
+# The UNIVERSAL litellm fix chain in the base manifests (startupProbe 120,
+# num_workers 1, prisma-migrate init container, DISABLE_SCHEMA_UPDATE) is inherited
+# unchanged. Selected by apply.sh via litellm/lean when AI_INFRA_PROFILE=lean.
+namespace: litellm
+
+resources:
+  - ../priorityclass.yaml
+  - ../deployment.yaml
+  - ../service.yaml
+  - ../proxy-config.yaml
+  - ../pylogging-config.yaml
+  - ../pdb.yaml
+
+commonLabels:
+  app.kubernetes.io/name: litellm
+  app.kubernetes.io/part-of: ai-infra-platform
+  app.kubernetes.io/component: gateway
+
+patches:
+  - target:
+      kind: Deployment
+      name: litellm
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 1
+  - target:
+      kind: PodDisruptionBudget
+      name: litellm
+    patch: |-
+      - op: remove
+        path: /spec/minAvailable
+      - op: add
+        path: /spec/maxUnavailable
+        value: 1

@@ -1,0 +1,21 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for langfuse-valkey.
+#
+# DELTA ONLY. Layered over values.yaml by the lean/ kustomization via the Helm
+# inflator's `valuesFile: ../values.yaml` + `additionalValuesFiles: [../values-lean.yaml]`
+# (helm merges -f base -f lean; later file wins, and an explicit `null` DELETES the
+# key). Everything not named here is inherited from the HA values.yaml, so keep this
+# file to the single-host deltas only.
+#
+# Coupled set (planning §5 — Valkey): replica.replicas / minReplicasToWrite / PDB
+# move together. 0 replicas => a single primary pod, so minReplicasToWrite must drop
+# to 0 (a write-quorum of 1 with no replica would block every write), and the PDB
+# flips from minAvailable:2 (needs 3 pods) to maxUnavailable:1 (drain-safe on 1 pod).
+replica:
+  replicas: 0
+  minReplicasToWrite: 0
+
+podDisruptionBudget:
+  # `null` removes the HA base's minAvailable:2 during the deep-merge so the rendered
+  # PDB carries ONLY maxUnavailable:1 (a PDB may not set both).
+  minAvailable: null
+  maxUnavailable: 1

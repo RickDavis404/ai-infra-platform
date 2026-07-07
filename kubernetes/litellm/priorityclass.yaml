@@ -1,0 +1,44 @@
+# ai-infra-gateway — cluster-scoped PriorityClass shielding the AI gateway plane
+# (the litellm Deployment and its CNPG litellm-pg Cluster; the gateway is down
+# without its Postgres, so both carry it).
+#
+# WHY: the 2026-07 lean eviction loop showed the gateway is exactly the pod the
+# platform can least afford to lose, yet at priority 0 it competed as an equal with
+# every batch/observability pod. Priority acts twice in its favor:
+#   - Scheduling: with PreemptLowerPriority, a Pending gateway pod may preempt
+#     lower-priority pods instead of sitting unschedulable behind them.
+#   - Kubelet eviction: under node memory pressure kubelet ranks victims by
+#     (1) usage exceeding request, then (2) pod priority, then (3) usage-over-request
+#     amount. The honest 1536Mi request keeps litellm out of bucket (1); this
+#     priority then wins it every remaining tie-break.
+#
+# value 100000 sits far above the workload default (0) and far below the reserved
+# system tiers (system-cluster-critical / system-node-critical at ~2e9), so system
+# components always outrank the gateway. globalDefault stays false: everything else
+# keeps priority 0. Cluster-scoped and profile-independent — harmless for HA (its
+# nodes never hit eviction pressure with the honest floors), essential for lean.
+#
+# Applied from TWO kustomizations by design (both server-side, identical bytes, so
+# repeated applies converge): kubernetes/litellm (its owning component) and
+# kubernetes/langfuse-data/cnpg (the stores phase applies litellm-pg BEFORE the
+# litellm phase runs — apply.sh step 4 vs 7 — and pod admission REJECTS any pod
+# whose priorityClassName does not exist yet).
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: ai-infra-gateway
+  # Inlined to MATCH kubernetes/litellm/kustomization.yaml's commonLabels exactly:
+  # the cnpg kustomization has no commonLabels, so carrying the labels in the file
+  # keeps both rendered copies byte-identical (no server-side-apply field churn
+  # between the stores-phase and litellm-phase applies).
+  labels:
+    app.kubernetes.io/name: litellm
+    app.kubernetes.io/part-of: ai-infra-platform
+    app.kubernetes.io/component: gateway
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: >-
+  AI gateway plane (LiteLLM proxy + its CNPG litellm-pg Postgres). Keeps the
+  gateway schedulable and last-in-line for kubelet memory eviction on the
+  resource-constrained lean profile; inert headroom on HA.

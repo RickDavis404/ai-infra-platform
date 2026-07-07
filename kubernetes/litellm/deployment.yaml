@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,8 +7,11 @@ metadata:
   labels:
     app.kubernetes.io/name: litellm
 spec:
-  # HA: >=2 replicas with RollingUpdate maxUnavailable:0 (the source's single
-  # replica + Recreate is explicitly overridden for v7 — §9.2 / §6.2).
+  # HA DEFAULT: 2 replicas spread one-per-node by the required pod anti-affinity
+  # below (§9.2 / §6.2), so a single node loss keeps the gateway serving. The
+  # AI_INFRA_PROFILE=lean overlay (litellm/lean/) patches this back to 1 for the
+  # 16GiB single-host profile. The startupProbe (120), num_workers 1, prisma-migrate
+  # init container and DISABLE_SCHEMA_UPDATE fixes below are UNIVERSAL (both profiles).
   replicas: 2
   strategy:
     type: RollingUpdate
@@ -27,6 +31,10 @@ spec:
         ai-infra-platform/proxy-config: litellm-config
         ai-infra-platform/pylogging-config: litellm-pylogging
     spec:
+      # Gateway-plane eviction/preemption shield (priorityclass.yaml): keeps the
+      # gateway schedulable (may preempt priority-0 pods) and makes kubelet memory
+      # eviction pick it LAST among pods within their requests. Both profiles.
+      priorityClassName: ai-infra-gateway
       # Spread the 2 replicas across distinct Lima nodes (required anti-affinity on
       # hostname, per the §6.2 HA matrix).
       affinity:
@@ -75,6 +83,70 @@ spec:
             runAsUser: 1000
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+        # Apply the litellm Prisma schema to completion BEFORE any app worker starts.
+        # WHY: the litellm image runs `prisma migrate deploy` IN-PROCESS at startup
+        # with a hard 60s subprocess timeout (x4 retries). On a freshly-provisioned
+        # litellm-pg — which is exactly what a from-bare rebuild yields, since
+        # lima/start.sh now wipes stale PVC data on instance CREATE — applying all
+        # ~127 migrations at once exceeds 60s, so the app SIGKILLs its own migrate
+        # subprocess mid-run. That orphans a Postgres backend still holding
+        # pg_advisory_lock(72707369); the retries then deadlock (Prisma P1002) and the
+        # schema freezes ~122 migrations behind. Visible symptom: the in-cluster
+        # team/key-mint Jobs fail `500 The column router_settings does not exist`.
+        # Running `prisma migrate deploy` here, as a dedicated init container, has NO
+        # such timeout, so the full migration set applies ONCE, cleanly, before the
+        # app connects. Idempotent on a warm DB (deploy is a no-op when current). Runs
+        # as root (like stage-prisma-cache) to use the image's baked prisma engine
+        # under the 0700-mode /root/.cache.
+        - name: prisma-migrate
+          image: ghcr.io/berriai/litellm-database:v1.91.0-rc.1@sha256:5b0f97edc30ab2ef2bfb5f97af166bd64ed1cb2a07393cdd6697e3f7e0d0839e
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              # litellm ships its Prisma schema + migrations inside the
+              # litellm_proxy_extras package; `migrate deploy` must run from that dir
+              # so prisma finds schema.prisma + the migrations/ tree.
+              cd "$(python -c 'import os, litellm_proxy_extras as m; print(os.path.dirname(m.__file__))')"
+              echo "prisma-migrate: applying migrations from $(pwd)"
+              prisma migrate deploy
+              echo "prisma-migrate: migrate deploy complete"
+          env:
+            # Same CNPG-minted connection string the main container uses.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-pg-app
+                  key: uri
+            # HOME=/root so prisma resolves the baked engine under /root/.cache.
+            - name: HOME
+              value: /root
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              # `prisma migrate deploy` spawns the migration engine and applies the
+              # full ~127-migration set in one shot; a 512Mi ceiling OOMKilled it
+              # (exit 137) on its first real run. 2Gi is ample headroom (the main
+              # container itself gets 4Gi). Requests stay low per the local-cluster
+              # low-request scheduling policy.
+              cpu: 1000m
+              memory: 2Gi
+          securityContext:
+            # Root ONLY to read the image's 0700-mode /root/.cache baked prisma engine
+            # (same rationale as stage-prisma-cache). No privilege escalation, all caps
+            # dropped. readOnlyRootFilesystem MUST be false: prisma links + SPAWNS its
+            # migration engine and writes scratch state at runtime.
+            runAsNonRoot: false
+            runAsUser: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
             capabilities:
               drop:
                 - ALL
@@ -161,6 +233,13 @@ spec:
                 secretKeyRef:
                   name: litellm-pg-app
                   key: uri
+            # The schema is applied to completion by the `prisma-migrate` initContainer
+            # (above), so the app must NOT run its own in-process, 60s-timeout
+            # `prisma migrate deploy` on boot — that race is exactly what wedged the
+            # advisory lock and froze the schema. This flag gates the app-side
+            # migrate/_setup_database path; Prisma client + views are unaffected.
+            - name: DISABLE_SCHEMA_UPDATE
+              value: "true"
             # Admin master key — gates /key/*, /team/*, /user/* and the admin UI.
             - name: LITELLM_MASTER_KEY
               valueFrom:
@@ -216,13 +295,18 @@ spec:
             # x-api-key path and breaks OAuth forwarding (§9.5).
           resources:
             requests:
-              cpu: 400m
-              memory: 1Gi
+              # Realistic floor: 1 uvicorn worker (--num_workers 1 above) resides at
+              # ~1.5GiB RSS, so the scheduler must count that — a token request let
+              # placement decorrelate from real usage and melt a node at ~95% memory.
+              cpu: 50m
+              memory: 1536Mi
             limits:
-              # 8Gi ceiling is deliberate: two workers spike past 3Gi; a 4Gi cap
-              # OOM'd in the POC (§9.2).
+              # 4Gi is ~2.7x the single worker's ~1.5GiB RSS and <= the smallest
+              # node, so a runaway hits its own cgroup OOM before eating the node.
+              # (The retired 8Gi ceiling was sized for the old 2-worker mode, whose
+              # spikes past 3Gi OOM'd a 4Gi cap in the POC — moot at 1 worker.)
               cpu: 1500m
-              memory: 8Gi
+              memory: 4Gi
           livenessProbe:
             httpGet:
               path: /health/liveliness
@@ -240,14 +324,16 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 3
           startupProbe:
-            # DB connect + config load on first boot can be slow; give 5 minutes.
+            # DB connect + config load on first boot can be slow; give a ~20-minute
+            # first-boot budget (120 x 10s), matching the langfuse-web/worker
+            # startup-probe pattern.
             httpGet:
               path: /health/readiness
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
-            failureThreshold: 30
+            failureThreshold: 120
           securityContext:
             runAsNonRoot: true
             runAsUser: 1000

@@ -1,0 +1,19 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for Grafana.
+#
+# DELTA ONLY. Layered over values.yaml by lean/kustomization.yaml
+# (valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]).
+# Everything else (DB wiring, admin secret, provisioning, ServiceMonitor, limits,
+# anti-affinity) is inherited from the HA values.yaml — keep this to the single-host
+# deltas only. The grafana-pg Cluster (instances 1 + enablePDB:false) is handled by a
+# CR patch in lean/kustomization.yaml, not here.
+#
+# The memory request reverts the HA meltdown-fix FLOOR (256Mi = Grafana's real
+# resident set, right for the no-swap 8GiB HA nodes) back to the schedulable 128Mi
+# low: a 5GiB lean node keeps only ~3.6GiB Allocatable after systemReserved, so
+# lean = low requests + systemReserved honesty + host swap for the runtime
+# overcommit. The helm deep-merge keeps the base cpu request and the 512Mi limit.
+replicas: 1
+
+resources:
+  requests:
+    memory: 128Mi

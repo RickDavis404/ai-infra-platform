@@ -1,3 +1,4 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # Prometheus — standalone (prometheus-community/prometheus 29.13.1), namespace lgtm.
 # StatefulSet, 1 replica, served under /prometheus.
 # Rendered via `kustomize build --enable-helm`.
@@ -64,8 +65,11 @@ server:
 
   resources:
     requests:
-      cpu: 100m
-      memory: 512Mi
+      cpu: 50m
+      # Realistic floor: the TSDB head + remote-write receiver working set sits
+      # around 1GiB on this cluster, so the scheduler must count it (token requests
+      # decorrelated placement from real usage and melted nodes on fresh bring-ups).
+      memory: 1Gi
     limits:
       memory: 2Gi
 

@@ -15,6 +15,10 @@ kind: Kustomization
 namespace: litellm
 
 resources:
+  # Cluster-scoped eviction/preemption shield for the gateway plane. ALSO applied by
+  # kubernetes/langfuse-data/cnpg (stores phase) because litellm-pg references it and
+  # applies before this overlay — see priorityclass.yaml's header.
+  - priorityclass.yaml
   - deployment.yaml
   - service.yaml
   - proxy-config.yaml

@@ -1,0 +1,39 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for SeaweedFS (S3 blob store for Langfuse/Loki/Tempo).
+#
+# The lean delta is chart config (replication placement + defaultReplication feed
+# master/filer args and config), not just replica counts, so the helmChart block is
+# RE-DECLARED and re-inflated with the base values plus the lean overrides:
+#   valuesFile: ../values.yaml
+#   additionalValuesFiles: [../values-lean.yaml]  (placement "000" + single servers)
+#
+# The `../` value-file references are ABOVE this root, so renders pass
+# `--load-restrictor LoadRestrictionsNone` (apply.sh / render-all.sh / diff.sh /
+# down.sh). The bucket-hook namespace-backfill patch is re-listed from the base
+# kustomization (a re-declared helmChart does not inherit the base's patches).
+#
+# Chart pin MUST equal the base (seaweedfs 4.37); a Renovate bump to
+# ../kustomization.yaml will NOT touch this copy — keep them in lock-step.
+namespace: langfuse-data
+
+helmCharts:
+- name: seaweedfs
+  repo: https://seaweedfs.github.io/seaweedfs/helm
+  version: "4.37"
+  releaseName: langfuse-seaweedfs
+  namespace: langfuse-data
+  valuesFile: ../values.yaml
+  additionalValuesFiles:
+  - ../values-lean.yaml
+
+# Namespace backfill for the post-install bucket-hook Job (see ../kustomization.yaml).
+patches:
+- patch: |-
+    - op: add
+      path: /metadata/namespace
+      value: langfuse-data
+  target:
+    kind: Job
+    name: langfuse-seaweedfs-bucket-hook

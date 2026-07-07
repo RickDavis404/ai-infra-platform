@@ -18,25 +18,26 @@ Production-like HA requires a coordination ensemble:
 
 - **Keeper (CHK):** `replicasCount: 3` — an odd Raft quorum that tolerates the
   loss of one Keeper (2/3 retains quorum; 2 would be invalid for quorum). Pods
-  are small (requests `cpu: 100m, memory: 256Mi`, limit `memory: 512Mi`), each
+  are small (requests `cpu: 25m, memory: 128Mi`, limit `memory: 512Mi`), each
   with its own 2Gi `local-path` volume, spread across hosts by required
   anti-affinity on `kubernetes.io/hostname`.
-- **CHI cluster `default`:** `shardsCount: 1`, `replicasCount: 2` →
-  `ReplicatedMergeTree` across two ClickHouse replicas. Durability and
-  coordination are delegated to the 3-node Keeper, so two data copies suffice;
-  a third would only waste storage. Replicas are anti-affined by hostname, each
-  with a 20Gi `local-path` PVC. The cluster **must** be named `default`:
-  Langfuse hard-codes `ON CLUSTER default` for its schema migrations (see the
-  comment in `chi.yaml`), so any other name lands `schema_migrations` on a single
-  localhost replica and breaks migrations.
+- **CHI cluster `default`:** `shardsCount: 1`, `replicasCount: 1` — a single
+  ClickHouse replica (20Gi `local-path` PVC), still coordinated by the Keeper so
+  Langfuse's `ReplicatedMergeTree` DDL works. Single-replica because two-replica HA
+  on one physical host is theatrical, and a 2nd replica makes the Altinity operator
+  block the CHI on new-replica catch-up — which hangs forever if a replica
+  resurrects stale on-disk data against a fresh Keeper (readonly tables, unbounded
+  `absolute_delay`; the 2026-07-06 from-bare stall). The cluster **must** still be
+  named `default`: Langfuse hard-codes `ON CLUSTER default` for its schema
+  migrations (see the comment in `chi.yaml`), so any other name breaks migrations.
 
-A node loss costs one ClickHouse replica and (if it co-locates) one Keeper vote —
-both tolerated. The surviving replica serves reads/writes while Keeper holds
-quorum; when the lost replica returns, `ReplicatedMergeTree` re-syncs missing
-parts from its peer via Keeper.
-
-This deliberately reverses the upstream single-node "drop the Keeper"
-optimization, because v7 targets HA.
+ClickHouse itself is therefore a single point of failure (one replica); the Keeper
+quorum (3 nodes) still tolerates one node loss. This is a deliberate local-lab
+posture — the whole platform runs on one physical host, so ClickHouse HA across VMs
+bought nothing but the operator new-replica-wait fragility described above. The
+Keeper is kept (not dropped) so Langfuse's `Replicated*` DDL and `ON CLUSTER
+default` apply unchanged, leaving a clean path back to multi-replica if this ever
+runs on real multi-host hardware.
 
 ## Image & resources
 
@@ -44,7 +45,7 @@ optimization, because v7 targets HA.
   The `:25.8` tag is a **floating minor** pinned only by `@sha256`; patch bumps
   within the 25.8 LTS line are a manual digest re-pin (edit the `@sha256` in
   `chi.yaml`/`keeper.yaml`), never automatic.
-- CH pod requests `cpu: 500m, memory: 2Gi`; limit `memory: 8Gi` (a constrained
+- CH pod requests `cpu: 50m, memory: 512Mi`; limit `memory: 8Gi` (a constrained
   lab may lower the limit to `4Gi`). ClickHouse is explicitly subject to the
   resource-escalation policy: under sizing pressure, escalate the bump rather
   than quietly degrading. The documented honest fallback is a reduced posture

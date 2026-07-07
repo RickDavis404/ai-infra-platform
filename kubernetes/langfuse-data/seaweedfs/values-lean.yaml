@@ -1,0 +1,26 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for langfuse-seaweedfs.
+#
+# DELTA ONLY. Layered over values.yaml by the lean/ kustomization (helm merges
+# -f ../values.yaml -f ../values-lean.yaml). Everything not named here (S3 buckets,
+# auth, storage sizes, PodSecurity emptyDir log dirs, resources) is inherited from
+# the HA values.yaml — keep this file to the single-host deltas only.
+#
+# Coupled set (planning §5 — SeaweedFS): replication placement and every server
+# count move together. Replication "000" = no extra copy, so a single master (valid
+# single-node Raft), a single volume server, and a single filer are sufficient. The
+# HA "001" placement REQUIRES >= 2 volume servers + an odd (3) master Raft quorum, so
+# dropping placement to "000" and the counts to 1 must happen as one set.
+global:
+  seaweedfs:
+    replicationPlacement: "000"
+
+master:
+  replicas: 1
+  defaultReplication: "000"
+
+volume:
+  replicas: 1
+
+filer:
+  replicas: 1
+  defaultReplicaPlacement: "000"

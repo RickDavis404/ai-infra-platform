@@ -1,0 +1,20 @@
+# values-lean.yaml — AI_INFRA_PROFILE=lean overrides for Prometheus.
+#
+# DELTA ONLY. Layered over values.yaml by lean/kustomization.yaml
+# (valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]).
+# Everything else (StatefulSet/1-replica, route-prefix, retention, remote-write
+# intake role, subcharts, limits) is inherited from the HA values.yaml — keep this
+# file to the single-host deltas only.
+#
+# The memory request reverts the HA meltdown-fix FLOOR (1Gi = the real TSDB-head +
+# remote-write working set, right for the no-swap 8GiB HA nodes) back to the
+# schedulable 512Mi low: a 5GiB lean node keeps only ~3.6GiB Allocatable after
+# systemReserved (1280Mi) + evictionHard (300Mi), so a 1Gi request crowds the rest
+# of the stack off the node. Lean's posture = low requests (schedulable) +
+# systemReserved (packing honesty / meltdown safety) + the 16GB host's swap for
+# the runtime overcommit. The helm deep-merge keeps the base cpu request and the
+# 2Gi limit.
+server:
+  resources:
+    requests:
+      memory: 512Mi

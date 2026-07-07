@@ -1,9 +1,12 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # ClickHouseKeeperInstallation (CHK) — Raft coordination ensemble for the
-# `langfuse-ch` CHI. replicasCount 3 gives an odd Raft quorum that tolerates the
-# loss of one Keeper (2/3 retains quorum). Durability/coordination is delegated
-# here, which is why the CHI runs only two data replicas. The operator exposes
-# the ensemble at `keeper-langfuse-keeper.langfuse-data.svc.cluster.local:2181`,
-# which the CHI references via `spec.configuration.zookeeper`.
+# `langfuse-ch` CHI. replicasCount 3 is the HA DEFAULT: a 3-node Raft quorum
+# (odd count — tolerates one loss; 2 is invalid for Raft) spread across the three
+# nodes. The `AI_INFRA_PROFILE=lean` overlay patches this back to replicasCount 1
+# (a valid single-node Raft, no quorum redundancy) for the 16GiB single-host profile
+# — see clickhouse/lean/. The operator exposes the ensemble at
+# `keeper-langfuse-keeper.langfuse-data.svc.cluster.local:2181`, which the CHI
+# references via `spec.configuration.zookeeper`.
 apiVersion: clickhouse-keeper.altinity.com/v1
 kind: ClickHouseKeeperInstallation
 metadata:
@@ -58,8 +61,8 @@ spec:
               imagePullPolicy: IfNotPresent
               resources:
                 requests:
-                  cpu: 100m
-                  memory: 256Mi
+                  cpu: 25m
+                  memory: 128Mi
                 limits:
                   memory: 512Mi
     volumeClaimTemplates:

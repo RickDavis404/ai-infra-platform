@@ -6,9 +6,11 @@ metadata:
   labels:
     app.kubernetes.io/name: litellm
 spec:
-  # Keep at least one replica serving through voluntary disruptions (node drains,
-  # rollouts). With replicas: 2 and maxUnavailable: 0 on the Deployment, this is the
-  # §6.2 HA budget for the gateway.
+  # HA DEFAULT: minAvailable 1 keeps at least one gateway pod up through a voluntary
+  # disruption (safe with 2 replicas). The AI_INFRA_PROFILE=lean overlay
+  # (litellm/lean/) swaps this for maxUnavailable 1 on its single replica, so a node
+  # drain can still evict the lone pod (a minAvailable:1 PDB on 1 replica would allow
+  # 0 disruptions and block drains).
   minAvailable: 1
   selector:
     matchLabels:

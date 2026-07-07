@@ -103,7 +103,7 @@ Order within `keys/` (enforced by initContainers, not kustomize):
 | Alias | Team | Used by | Scope |
 |---|---|---|---|
 | `claude-code` | `agents`  | Claude Code Max client (proxy auth) | `claude-*` + local routes |
-| `codex`       | `agents`  | Codex client (proxy auth)           | `gpt-5.4` + local routes |
+| `codex`       | `agents`  | Codex client (proxy auth)           | `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.5` + local routes |
 | `smoke-test`  | `service` | §15 smoke/validation harness        | local routes only |
 
 The Jobs run under the `litellm-key-provisioner` ServiceAccount, scoped to

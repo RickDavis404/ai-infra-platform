@@ -1,9 +1,16 @@
+# PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: langfuse-pg
   namespace: langfuse-data
 spec:
+  # HA DEFAULT: 3-instance quorum (primary + 2 standbys) spread one-per-node by the
+  # required pod anti-affinity below. The AI_INFRA_PROFILE=lean overlay patches this
+  # to instances 1 (+ enablePDB:false, - synchronous) for the 16GiB single-host
+  # profile — see cnpg/lean/. The CNPG operator emits the primary PDB (minAvailable 1)
+  # by default; with 3 instances a node drain still leaves a quorum, so it is kept
+  # (enablePDB:false is a LEAN-only override).
   instances: 3
   imageName: ghcr.io/cloudnative-pg/postgresql:18.4-system-trixie@sha256:233d7414ff5c1e4951e85389fb4bec31c18f35be1d7d47eea5aa296a46af0b5f
   # Pinned tag: skip the re-pull on idempotent re-apply so repeated runs don't hit
@@ -29,9 +36,14 @@ spec:
   postgresql:
     parameters:
       timezone: UTC                 # Langfuse requires UTC
+    # Quorum-synchronous replication: every commit must be acknowledged by at least
+    # `number` of the (instances-1) standbys before the client sees success (RPO 0 on
+    # a single node loss). REQUIRES instances >= 3 (number < instances-1); the
+    # AI_INFRA_PROFILE=lean overlay REMOVES this block when it drops to instances 1
+    # (with a lone primary and no standby, a synchronous commit would block forever).
     synchronous:
       method: any
-      number: 1                     # quorum: 1 of 2 standbys must confirm (number < instances-1)
+      number: 1
   bootstrap:
     initdb:
       database: postgres_langfuse
@@ -45,7 +57,7 @@ spec:
     topologyKey: kubernetes.io/hostname
     podAntiAffinityType: required   # spread the 3 instances across the 3 nodes
   resources:
-    requests: { cpu: 250m, memory: 512Mi }
+    requests: { cpu: 50m, memory: 256Mi }
     limits:   { memory: 1Gi }
   monitoring:
     enablePodMonitor: true          # CNPG operator emits a PodMonitor (:9187 /metrics); Alloy discovers all PodMonitors cluster-wide

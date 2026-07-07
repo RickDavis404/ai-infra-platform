@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# langfuse-data (AI_INFRA_PROFILE=lean) — the lean aggregate that mirrors
+# ../kustomization.yaml but swaps each store base for its co-located lean/ overlay.
+# apply.sh applies this instead of the HA base when AI_INFRA_PROFILE=lean (via
+# profile_target langfuse-data -> langfuse-data/lean).
+#
+# No `namespace:` here on purpose — same as the HA aggregate: the cnpg base spans two
+# namespaces (langfuse-pg in langfuse-data, litellm-pg in litellm), so each child owns
+# its own namespace.
+#
+# `../<store>/lean` are kustomize DIRECTORY references (allowed under the default load
+# restrictor); the valkey/seaweedfs lean children additionally read ../values*.yaml
+# via Helm, which is why every render path passes --load-restrictor LoadRestrictionsNone.
+resources:
+  - ../cnpg/lean
+  - ../clickhouse/lean
+  - ../valkey/lean
+  - ../seaweedfs/lean

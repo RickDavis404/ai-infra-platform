@@ -126,6 +126,13 @@ data:
         litellm_params:
           model: "chatgpt/gpt-5.4"
           api_base: "https://chatgpt.com/backend-api/codex"
+      # Codex CLI exposes `gpt-5.3-codex`; the ChatGPT Codex backend expects the
+      # subscription upstream slug `gpt-5.3-codex-spark`.
+      - model_name: "gpt-5.3-codex"
+        model_info: { mode: responses }
+        litellm_params:
+          model: "chatgpt/gpt-5.3-codex-spark"
+          api_base: "https://chatgpt.com/backend-api/codex"
       # gpt-5.5 is the current Codex CLI default (~/.codex `model = "gpt-5.5"`); same
       # ChatGPT-subscription passthrough route as 5.4 (client-OAuth-only).
       - model_name: "gpt-5.5"

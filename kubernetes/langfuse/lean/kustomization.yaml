@@ -1,0 +1,52 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for Langfuse web + worker.
+#
+# Langfuse's replica + PDB deltas are Helm values and the parent DIRECTORY cannot be
+# used as a base (containment cycle), so the langfuse helmChart is RE-DECLARED here
+# with the base values plus the lean override:
+#   valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]
+#   (web/worker replicas 1; each PDB -> maxUnavailable:1 via the null-delete trick)
+#
+# The re-declared helmChart does NOT inherit the base kustomization's patches, so the
+# three UNIVERSAL patches are RE-LISTED by relative path: the langfuse-web LB Service
+# fields, and the web + worker startupProbes (critical — the fresh-boot Prisma +
+# ClickHouse migration outruns the default liveness window without them). The base's
+# patches/ha.yaml (PDB minAvailable) is intentionally NOT re-listed — the lean PDB is
+# set by values-lean.yaml instead. Keep the re-listed patches and the chart pin
+# (langfuse 1.5.37) in lock-step with ../kustomization.yaml (planning §5).
+#
+# The `../` value/patch references are ABOVE this root, so renders pass
+# `--load-restrictor LoadRestrictionsNone`. apply.sh's migration-serialize scale-back
+# reads the langfuse-web replica count from THIS overlay (1) when the lean profile is
+# active.
+namespace: langfuse
+
+helmCharts:
+  - name: langfuse
+    repo: https://langfuse.github.io/langfuse-k8s
+    version: 1.5.37
+    releaseName: langfuse
+    namespace: langfuse
+    valuesFile: ../values.yaml
+    additionalValuesFiles:
+      - ../values-lean.yaml
+    includeCRDs: true
+
+patches:
+  # langfuse-web LoadBalancer Service: loadBalancerClass + externalTrafficPolicy that
+  # the chart template cannot emit (mirrors ../kustomization.yaml).
+  - path: ../patches/lb-service.yaml
+    target:
+      kind: Service
+      name: langfuse-web
+  # Injected startupProbes (UNIVERSAL — see ../patches headers).
+  - path: ../patches/startup-probe-web.yaml
+    target:
+      kind: Deployment
+      name: langfuse-web
+  - path: ../patches/startup-probe-worker.yaml
+    target:
+      kind: Deployment
+      name: langfuse-worker

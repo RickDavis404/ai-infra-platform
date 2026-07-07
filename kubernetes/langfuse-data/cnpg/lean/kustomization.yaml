@@ -1,0 +1,45 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for the CNPG stores (langfuse-pg + litellm-pg).
+#
+# It re-lists the base CR files by relative path (../langfuse-pg.yaml,
+# ../litellm-pg.yaml) rather than referencing the parent DIRECTORY: a kustomization
+# cannot use a base that CONTAINS it (this dir sits inside ../), which kustomize
+# rejects as a containment cycle. File references above this root are allowed because
+# every render path passes `--load-restrictor LoadRestrictionsNone` (apply.sh /
+# render-all.sh / diff.sh / down.sh). Keep this list in lock-step with
+# ../kustomization.yaml.
+#
+# The three field patches move together as one coupled set (planning §5):
+#   - instances 3 -> 1
+#   - enablePDB: false  (the operator's primary PDB minAvailable:1 would allow 0
+#     voluntary disruptions on a lone primary and block node drains)
+#   - REMOVE postgresql.synchronous  (a quorum-synchronous commit with no standby
+#     blocks forever; synchronous is only valid with instances >= 3)
+#
+# Selected by .config/mise/tasks/k8s/apply.sh via langfuse-data/lean when
+# AI_INFRA_PROFILE=lean. grafana-pg is a SEPARATE cluster patched by
+# lgtm/grafana/lean (it never carries synchronous).
+resources:
+  # ai-infra-gateway PriorityClass — mirrors ../kustomization.yaml (litellm-pg
+  # references it and this stores phase applies before the litellm phase; rationale
+  # there). Cluster-scoped, so the kind:Cluster patches below never touch it.
+  - ../../../litellm/priorityclass.yaml
+  - ../langfuse-pg.yaml
+  - ../litellm-pg.yaml
+
+patches:
+  # kind: Cluster with no name matches both langfuse-pg and litellm-pg; the same
+  # three ops apply to each. (grafana-pg lives in the lgtm/grafana base, not here.)
+  - target:
+      kind: Cluster
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: add
+        path: /spec/enablePDB
+        value: false
+      - op: remove
+        path: /spec/postgresql/synchronous

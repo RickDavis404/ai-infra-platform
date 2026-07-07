@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# AI_INFRA_PROFILE=lean overlay for Grafana + its CNPG database.
+#
+# Grafana's replica count is a Helm value and the parent DIRECTORY cannot be used as
+# a base (containment cycle), so the grafana helmChart is RE-DECLARED here with the
+# base values plus the lean override (replicas 1), and the grafana-pg CR is re-listed
+# by file and patched:
+#   valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]
+#   ../grafana-pg.yaml patched to instances 1 + enablePDB:false (a lone-primary PDB
+#   minAvailable:1 would block node drains; grafana-pg never carries synchronous).
+#
+# The `../` value/file references are ABOVE this root, so renders pass
+# `--load-restrictor LoadRestrictionsNone`. Chart pin, releaseName, generatorOptions
+# and namespace MUST match ../kustomization.yaml (grafana 12.7.1); a Renovate bump to
+# the base will NOT touch this copy — keep them in lock-step (planning §5).
+namespace: lgtm
+
+resources:
+  - ../grafana-pg.yaml
+
+helmCharts:
+  - name: grafana
+    repo: https://grafana-community.github.io/helm-charts
+    version: 12.7.1
+    releaseName: grafana
+    namespace: lgtm
+    valuesFile: ../values.yaml
+    additionalValuesFiles:
+      - ../values-lean.yaml
+    includeCRDs: false
+
+generatorOptions:
+  disableNameSuffixHash: true
+
+patches:
+  - target:
+      kind: Cluster
+      name: grafana-pg
+    patch: |-
+      - op: replace
+        path: /spec/instances
+        value: 1
+      - op: add
+        path: /spec/enablePDB
+        value: false

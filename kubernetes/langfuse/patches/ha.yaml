@@ -2,8 +2,10 @@
 #
 # The chart already emits a PodDisruptionBudget per component (pdb.create: true,
 # minAvailable: 1 in values.yaml). This patch is the belt-and-suspenders guarantee
-# that minAvailable lands at exactly 1 regardless of how the pinned chart renders
-# the field — so a node drain or rolling update never takes the last replica down.
+# that minAvailable lands at exactly 1 regardless of how the pinned chart renders the
+# field — so with 2 replicas at least one pod stays up through a voluntary
+# disruption. (The AI_INFRA_PROFILE=lean overlay, langfuse/lean/, replaces this with
+# maxUnavailable: 1 on its single-replica web/worker so a node drain isn't blocked.)
 #
 # Targeted in kustomization.yaml by kind: PodDisruptionBudget +
 # labelSelector app.kubernetes.io/instance=langfuse (matches both the

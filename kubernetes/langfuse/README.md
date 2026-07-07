@@ -68,6 +68,12 @@ and `AUTH_TRUST_HOST=true` lets next-auth accept the host for session/redirect
 validation. If you use the port-forward fallback instead, flip `nextauth.url` to
 `http://127.0.0.1:33000` to match.
 
+The native Langfuse MCP endpoint is exposed at
+`http://192.168.105.201:3000/api/public/mcp` over streamable HTTP. Codex authenticates
+with `Authorization: Basic <base64(public:secret)>`, derived from the existing
+Langfuse project API key pair at launch. `LANGFUSE_MCP_ALLOWED_HOSTS` includes the
+VIP host/origin so the endpoint accepts the host header used by the direct L2 path.
+
 ## Externalized stores
 
 All four bundled data subcharts are **disabled** (`deploy: false`) and Langfuse is
