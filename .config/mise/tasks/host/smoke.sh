@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#MISE description="Verify host services (llama-swap, macmon, host OTel Collector) respond."
+#MISE description="Verify host services (llama-swap, macmon, Grafana Alloy) respond."
 # .config/mise/tasks/host/smoke.sh — Mac-side host-service smoke (spec §8.4 / §9.1 / §13.2.3).
 #
 # Verifies:
@@ -35,7 +35,7 @@ readonly LLAMA_SWAP_URL="http://127.0.0.1:38080"
 readonly MACMON_URL="http://127.0.0.1:39300"
 readonly DEFAULT_CHAT_MODEL="${AI_INFRA_DEFAULT_CHAT_MODEL:-mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf}"
 readonly DEFAULT_CHAT_ALIAS="${DEFAULT_CHAT_MODEL#mac-local/}"
-readonly OTELCOL_CFG="${REPO_ROOT}/setup/mac-side/otelcol-config.yaml"
+readonly ALLOY_CFG="${REPO_ROOT}/setup/mac-side/alloy-config.alloy"
 readonly WRAPPER_STAGED="${HOME}/.local/bin/ai-infra-llama-server-wrapper.sh"
 readonly WRAPPER_SRC="${REPO_ROOT}/setup/mac-side/llama-server-wrapper.sh"
 
@@ -92,20 +92,20 @@ check_wrapper() {
 
 check_no_per_model_scrape() {
   info "5) NO per-model /upstream/<model>/metrics scrape configured"
-  if [[ ! -f "${OTELCOL_CFG}" ]]; then
-    note_fail "otelcol config missing: ${OTELCOL_CFG}"
+  if [[ ! -f "${ALLOY_CFG}" ]]; then
+    note_fail "alloy config missing: ${ALLOY_CFG}"
     return
   fi
-  if grep -v '^[[:space:]]*#' "${OTELCOL_CFG}" | grep -q '/upstream/'; then
-    note_fail "otelcol config references /upstream/ (auto-load trap §8.4)"
+  if grep -v '^[[:space:]]*//' "${ALLOY_CFG}" | grep -q '/upstream/'; then
+    note_fail "alloy config references /upstream/ (auto-load trap §8.4)"
   else
-    info "   no /upstream/ targets in otelcol config"
+    info "   no /upstream/ targets in alloy config"
   fi
-  # The aggregate llama-swap job must be present and target only :38080.
-  if grep -q 'job_name: llama-swap' "${OTELCOL_CFG}"; then
+  # The aggregate llama-swap scrape must be present and target only :38080.
+  if grep -Eq 'job_name[[:space:]]*=[[:space:]]*"llama-swap"' "${ALLOY_CFG}"; then
     info "   aggregate llama-swap scrape job present (:38080 only)"
   else
-    note_fail "otelcol config missing aggregate llama-swap scrape job"
+    note_fail "alloy config missing aggregate llama-swap scrape job"
   fi
 }
 

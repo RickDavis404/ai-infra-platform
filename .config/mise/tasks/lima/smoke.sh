@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-#MISE description="Substrate smoke: 3 Ready, etcd quorum, kube-vip VIP, kubeProxyReplacement=True, LoadBalancer VIP."
+#MISE description="Substrate smoke: profile-expected nodes Ready, etcd health, kube-vip VIP, kubeProxyReplacement=True, LoadBalancer VIP."
 set -euo pipefail
 
 # lima:smoke — post-bootstrap validation of the cluster SUBSTRATE only (component
-# smoke lives in the respective component tasks). Checks:
+# smoke lives in the respective component tasks). Node/etcd expectations are
+# PROFILE-DRIVEN (lean DEFAULT: the single-node topology — 1 node, 1 healthy etcd
+# member, no quorum redundancy; AI_INFRA_PROFILE=ha: 3 nodes + quorum >= 2).
+# Checks:
 #   - host kubectl reaches the VIP (https://192.168.105.40:6443).
-#   - 3 control-plane nodes Ready.
-#   - etcd quorum present (stacked etcd; tolerates 1-node loss).
+#   - all profile-expected control-plane nodes Ready (HA: 3, lean: 1).
+#   - etcd healthy (HA: quorum present, tolerates 1-node loss; lean: sole member up).
 #   - kube-vip control-plane VIP /healthz reachable from the host.
 #   - Cilium reports KubeProxyReplacement: True.
 #   - a scratch LoadBalancer service is assigned a VIP from the lima-shared-pool.
@@ -20,6 +23,17 @@ REPO_ROOT="${MISE_PROJECT_ROOT:-$(cd -- "${SCRIPT_DIR}" >/dev/null 2>&1 && { git
 
 readonly NODE0="ai-inf-platform-0"
 readonly VIP="192.168.105.40"
+# Profile-expected node count + minimum healthy etcd members (mirrors lima:start's
+# topology gate): lean (DEFAULT) = single node / sole member; ha = 3 nodes / quorum >= 2.
+readonly PROFILE="${AI_INFRA_PROFILE:-lean}"
+if [[ "${PROFILE}" == "lean" ]]; then
+  EXPECTED_NODES=1
+  ETCD_MIN_HEALTHY=1
+else
+  EXPECTED_NODES=3
+  ETCD_MIN_HEALTHY=2
+fi
+readonly EXPECTED_NODES ETCD_MIN_HEALTHY
 readonly POOL_PREFIX="192.168.105.2"
 readonly SCRATCH_NS="default"
 readonly SCRATCH_POD="ai-infra-smoke"
@@ -44,18 +58,22 @@ check_host_api() {
 }
 
 check_nodes() {
-  info "check: 3 control-plane nodes Ready"
+  info "check: ${EXPECTED_NODES} control-plane node(s) Ready (${PROFILE} profile)"
   local total ready cp
   total="$(kc get nodes --no-headers 2>/dev/null | wc -l | tr -d ' ')"
   ready="$(kc get nodes --no-headers 2>/dev/null | awk '$2 ~ /(^|,)Ready($|,)/ {c++} END {print c + 0}')"
   cp="$(kc get nodes -l node-role.kubernetes.io/control-plane --no-headers 2>/dev/null | wc -l | tr -d ' ')"
-  [ "${total:-0}" -ge 3 ] || note_fail "expected >=3 nodes, found ${total:-0}"
-  [ "${ready:-0}" -ge 3 ] || note_fail "expected >=3 Ready nodes, found ${ready:-0}"
-  [ "${cp:-0}" -ge 3 ] || note_fail "expected >=3 control-plane nodes, found ${cp:-0}"
+  [ "${total:-0}" -ge "${EXPECTED_NODES}" ] || note_fail "expected >=${EXPECTED_NODES} nodes, found ${total:-0}"
+  [ "${ready:-0}" -ge "${EXPECTED_NODES}" ] || note_fail "expected >=${EXPECTED_NODES} Ready nodes, found ${ready:-0}"
+  [ "${cp:-0}" -ge "${EXPECTED_NODES}" ] || note_fail "expected >=${EXPECTED_NODES} control-plane nodes, found ${cp:-0}"
 }
 
 check_etcd_quorum() {
-  info "check: etcd quorum (tolerates 1-node loss)"
+  if [ "${ETCD_MIN_HEALTHY}" -ge 2 ]; then
+    info "check: etcd quorum (tolerates 1-node loss)"
+  else
+    info "check: etcd sole-member health (lean single node — no quorum redundancy)"
+  fi
   command -v limactl >/dev/null 2>&1 || {
     warn "limactl absent; skipping in-guest etcd quorum check"
     return 0
@@ -76,11 +94,11 @@ check_etcd_quorum() {
     ' 2>/dev/null || true
   )"
   if [ "${healthy}" = "skip" ]; then
-    warn "etcdctl absent in guest; relying on the 3-CP node count above for quorum"
-  elif [ "${healthy:-0}" -ge 2 ]; then
-    info "etcd healthy members: ${healthy} (quorum present)"
+    warn "etcdctl absent in guest; relying on the CP node count check above"
+  elif [ "${healthy:-0}" -ge "${ETCD_MIN_HEALTHY}" ]; then
+    info "etcd healthy members: ${healthy} (>= ${ETCD_MIN_HEALTHY} expected for the ${PROFILE} profile)"
   else
-    note_fail "etcd healthy members ${healthy:-0} < 2 (no quorum)"
+    note_fail "etcd healthy members ${healthy:-0} < ${ETCD_MIN_HEALTHY} (${PROFILE} profile minimum)"
   fi
 }
 

@@ -60,7 +60,11 @@ is_skipped() {
 
 # Discover every kustomization base (a directory holding kustomization.yaml|.yml),
 # at any depth under kubernetes/ (covers operators/cnpg, operators/clickhouse-operator).
-mapfile -t kustomizations < <(
+# while/read replaces mapfile (bash 3.2-safe).
+kustomizations=()
+while IFS= read -r kfile_line; do
+  kustomizations+=("${kfile_line}")
+done < <(
   find "${k8s_dir}" -type f \( -name kustomization.yaml -o -name kustomization.yml \) |
     sort
 )
@@ -83,7 +87,15 @@ for kfile in "${kustomizations[@]}"; do
 
   log "# RENDER ${rel}"
   printf -- '---\n# source: %s\n' "${rel}"
-  if ! kustomize build --enable-helm "${helm_api_versions[@]}" "${base_dir}"; then
+  # --load-restrictor LoadRestrictionsNone: this loop renders EVERY kustomization dir,
+  # including the AI_INFRA_PROFILE=lean overlays whose chart-redeclare kustomizations
+  # (valkey/seaweedfs/loki lean) reference the base values one directory up
+  # (valuesFile: ../values.yaml + additionalValuesFiles: [../values-lean.yaml]).
+  # kustomize's default root-only restrictor rejects a value file above the
+  # kustomization root, so the lean dirs would fail to render without this. One HA
+  # base needs it too: langfuse-data/cnpg references ../../litellm/priorityclass.yaml
+  # (apply-ordering shield for litellm-pg). Kept in lock-step with apply.sh.
+  if ! kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${helm_api_versions[@]}" "${base_dir}"; then
     log "ERROR: 'kustomize build --enable-helm ${rel}' failed."
     log "       If this is an offline helm-repo fetch failure, run with network access"
     log "       or pre-populate the helm chart cache, then retry."

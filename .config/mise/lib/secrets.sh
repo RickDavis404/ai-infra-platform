@@ -39,6 +39,19 @@ AI_INFRA_SHARED_ENV_OPTIONAL_KEYS=(
   DOCKERHUB_TOKEN
 )
 
+# The age PUBLIC recipient committed as a placeholder in the tracked fnox.toml
+# [providers].age and secrets/.agerecipients. It is NOT a usable operator key:
+# secrets:keygen must EXCLUDE it from the operator's recipient set, and secrets:seal
+# must REFUSE to seal to it. Keep byte-for-byte identical to the value committed in
+# fnox.toml / secrets/.agerecipients (single source of truth for both guards).
+# SCRUB NOTE: the current value is a real operator public recipient carried in from a
+# key rotation (the stale guards referenced the pre-rotation age1zrqtwy… key). It is a
+# publication de-identification item — rotate to a clearly-synthetic throwaway
+# recipient in a coordinated change (this constant + fnox.toml + secrets/.agerecipients).
+# Tracked for human review; NOT rotated here.
+# shellcheck disable=SC2034 # sourced by task scripts
+AI_INFRA_PLACEHOLDER_AGE_RECIPIENT="age1askmfmrkjf7ln3drgngdz2txt88nd4spgv52f6ekcu9hpv3gpy6skp79sf"
+
 ai_infra_secret_description() {
   case "$1" in
   LITELLM_MASTER_KEY) printf '%s\n' "LiteLLM admin/master key for gateway administration and key minting" ;;
@@ -104,6 +117,46 @@ ai_infra_key_in_list() {
     [[ "${item}" == "${needle}" ]] && return 0
   done
   return 1
+}
+
+# --- KEY=value file readers (bash 3.2-safe; no associative arrays) -------------
+# sv_get and sv_has parse a KEY=value file with the SAME rules the secrets tasks
+# have always used: skip comment (leading '#') and blank lines; split each line on
+# the FIRST '='; strip a trailing CR; strip ONE surrounding pair of double quotes;
+# and accept only a shell-safe key name (^[A-Za-z_][A-Za-z0-9_]*$). On a duplicate
+# key the LAST occurrence wins, matching the previous single-pass array load.
+# Neither function ever logs a value.
+
+# sv_get <file> <key> — print the value for <key> (which may be empty) and return 0
+# when the key is present; print nothing and return 1 when the key is ABSENT. The
+# value is emitted with no trailing newline so it can be piped straight to a
+# consumer (e.g. `fnox set`) byte-for-byte.
+sv_get() {
+  awk -v key="$2" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      eq = index($0, "=")
+      if (eq == 0) next
+      k = substr($0, 1, eq - 1)
+      if (k !~ /^[A-Za-z_][A-Za-z0-9_]*$/) next
+      if (k != key) next
+      v = substr($0, eq + 1)
+      sub(/\r$/, "", v)
+      if (v ~ /^".*"$/) v = substr(v, 2, length(v) - 2)
+      found = 1
+      val = v
+    }
+    END {
+      if (found) { printf "%s", val; exit 0 }
+      exit 1
+    }
+  ' "$1"
+}
+
+# sv_has <file> <key> — return 0 if <key> is present, 1 otherwise. Never prints.
+sv_has() {
+  sv_get "$1" "$2" >/dev/null
 }
 
 : "${_AI_INFRA_SECRETS_SH_SOURCED}"

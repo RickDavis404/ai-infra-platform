@@ -28,7 +28,11 @@ if [[ ! -f "${list}" ]]; then
 fi
 
 # Read non-comment, non-blank pattern lines and OR them into one alternation.
-mapfile -t patterns < <(grep -vE '^[[:space:]]*(#|$)' "${list}")
+# while/read replaces mapfile (bash 3.2-safe).
+patterns=()
+while IFS= read -r line; do
+  patterns+=("${line}")
+done < <(grep -vE '^[[:space:]]*(#|$)' "${list}")
 if [[ "${#patterns[@]}" -eq 0 ]]; then
   printf 'WARNING: no patterns in %s — nothing to guard.\n' "${list}" >&2
   exit 0

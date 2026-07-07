@@ -25,7 +25,11 @@ if [[ ! -f "${pcfg}" ]]; then
 fi
 
 # Collect markdown sources: README.md + everything under docs/.
-mapfile -t mds < <(
+# while/read replaces mapfile (bash 3.2-safe).
+mds=()
+while IFS= read -r md_file; do
+  mds+=("${md_file}")
+done < <(
   {
     [[ -f "${repo_root}/README.md" ]] && printf '%s\n' "${repo_root}/README.md"
     [[ -d "${repo_root}/docs" ]] && find "${repo_root}/docs" -type f -name '*.md'

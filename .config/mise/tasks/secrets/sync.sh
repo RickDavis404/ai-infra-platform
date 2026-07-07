@@ -91,40 +91,34 @@ fnox -c "$fnox_local" export -f env -o "$dec" >/dev/null 2>&1 ||
 # repo-controlled path that never begins with `-`, so this is safe.
 chmod 600 "$dec"
 
-# 2) Load the .dec into an associative array WITHOUT echoing values. We parse
-#    KEY=value lines ourselves rather than `source`-ing, so a value can never be
-#    word-split or run as a command.
-declare -A SV=()
-while IFS= read -r _line || [[ -n "$_line" ]]; do
-  [[ "$_line" =~ ^[[:space:]]*# ]] && continue
-  [[ "$_line" =~ ^[[:space:]]*$ ]] && continue
-  [[ "$_line" == *=* ]] || continue
-  _k="${_line%%=*}"
-  _v="${_line#*=}"
-  # Trim surrounding quotes fnox may emit, then trim a trailing CR.
-  _v="${_v%$'\r'}"
-  if [[ "$_v" == \"*\" && "$_v" == *\" ]]; then
-    _v="${_v#\"}"
-    _v="${_v%\"}"
-  fi
-  [[ "$_k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-  SV["$_k"]="$_v"
-done <"$dec"
+# 2) Read the .dec on demand WITHOUT echoing values and WITHOUT an associative
+#    array (bash 3.2-safe). sv_dec parses KEY=value ourselves (first '=', trailing
+#    CR and one surrounding-quote pair trimmed) rather than `source`-ing, so a value
+#    can never be word-split or run as a command. Values are fetched at each point
+#    of use below; only key NAMES are ever logged.
+sv_dec() { sv_get "$dec" "$1"; }
 
 # Non-secret default: the Grafana admin USERNAME lives in mise (non-secret); allow
-# it to be absent from fnox and default to the documented placeholder `admin`.
-: "${SV[GRAFANA_ADMIN_USER]:=admin}"
+# it to be absent from (or empty in) fnox and default to the documented placeholder
+# `admin`.
+grafana_admin_user="$(sv_dec GRAFANA_ADMIN_USER)" || grafana_admin_user=""
+[[ -n "$grafana_admin_user" ]] || grafana_admin_user="admin"
 
-info "Decrypted $(printf '%s' "${#SV[@]}") key(s) into transient secrets/shared.env.dec. Key names:"
-for _k in $(printf '%s\n' "${!SV[@]}" | sort); do
-  info "  - ${_k}"
-done
+# Log key NAMES + count only; never the values. This reflects what fnox actually
+# produced (GRAFANA_ADMIN_USER may be defaulted above and is not required in fnox).
+dec_key_names="$(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$dec" | sed 's/=$//' | sort -u)"
+dec_key_count=0
+[[ -z "$dec_key_names" ]] || dec_key_count="$(printf '%s\n' "$dec_key_names" | wc -l | tr -d '[:space:]')"
+info "Decrypted ${dec_key_count} key(s) into transient secrets/shared.env.dec. Key names:"
+while IFS= read -r _k; do
+  [[ -n "$_k" ]] && info "  - ${_k}"
+done <<<"$dec_key_names"
 
 # require_keys <KEY...> — fail fast (by NAME) if any required fnox key is missing.
 require_keys() {
   local _miss=() _k
   for _k in "$@"; do
-    [[ -n "${SV[$_k]+x}" ]] || _miss+=("$_k")
+    sv_has "$dec" "$_k" || _miss+=("$_k")
   done
   if ((${#_miss[@]})); then
     die "missing required fnox key(s): ${_miss[*]} — seal them first (mise run secrets:seal)."
@@ -214,30 +208,30 @@ info "Materializing namespaced Secrets (key names remapped to consumer expectati
 
 # --- langfuse (app plane) ------------------------------------------------------
 apply_generic langfuse-app-secrets langfuse \
-  "salt=${SV[LANGFUSE_SALT]}" \
-  "encryption-key=${SV[LANGFUSE_ENCRYPTION_KEY]}" \
-  "nextauth-secret=${SV[LANGFUSE_NEXTAUTH_SECRET]}" \
-  "postgres-password=${SV[LANGFUSE_PG_PASSWORD]}" \
-  "clickhouse-password=${SV[CLICKHOUSE_PASSWORD]}" \
-  "redis-password=${SV[VALKEY_PASSWORD]}" \
-  "s3-access-key-id=${SV[SEAWEEDFS_S3_ACCESS_KEY]}" \
-  "s3-secret-access-key=${SV[SEAWEEDFS_S3_SECRET_KEY]}" \
-  "init-project-public-key=${SV[LANGFUSE_PUBLIC_KEY]}" \
-  "init-project-secret-key=${SV[LANGFUSE_SECRET_KEY]}" \
-  "init-user-password=${SV[LANGFUSE_ADMIN_PASSWORD]}"
+  "salt=$(sv_dec LANGFUSE_SALT)" \
+  "encryption-key=$(sv_dec LANGFUSE_ENCRYPTION_KEY)" \
+  "nextauth-secret=$(sv_dec LANGFUSE_NEXTAUTH_SECRET)" \
+  "postgres-password=$(sv_dec LANGFUSE_PG_PASSWORD)" \
+  "clickhouse-password=$(sv_dec CLICKHOUSE_PASSWORD)" \
+  "redis-password=$(sv_dec VALKEY_PASSWORD)" \
+  "s3-access-key-id=$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)" \
+  "s3-secret-access-key=$(sv_dec SEAWEEDFS_S3_SECRET_KEY)" \
+  "init-project-public-key=$(sv_dec LANGFUSE_PUBLIC_KEY)" \
+  "init-project-secret-key=$(sv_dec LANGFUSE_SECRET_KEY)" \
+  "init-user-password=$(sv_dec LANGFUSE_ADMIN_PASSWORD)"
 
 # --- langfuse-data (stores) ----------------------------------------------------
 apply_generic langfuse-shared-passwords langfuse-data \
-  "clickhouse-password=${SV[CLICKHOUSE_PASSWORD]}" \
-  "redis-password=${SV[VALKEY_PASSWORD]}"
+  "clickhouse-password=$(sv_dec CLICKHOUSE_PASSWORD)" \
+  "redis-password=$(sv_dec VALKEY_PASSWORD)"
 
-apply_basic_auth langfuse-pg-app langfuse-data langfuse "${SV[LANGFUSE_PG_PASSWORD]}" postgres_langfuse
+apply_basic_auth langfuse-pg-app langfuse-data langfuse "$(sv_dec LANGFUSE_PG_PASSWORD)" postgres_langfuse
 
 # SeaweedFS embedded-S3 config Secret. The filer mounts `seaweedfs_s3_config`; the
 # bucket hook + the Loki/Tempo S3 config read the access/secret keys. Identity name
 # is GENERIC (`langfuse-admin`), never a real/dev credential.
-_sw_ak="$(json_escape "${SV[SEAWEEDFS_S3_ACCESS_KEY]}")"
-_sw_sk="$(json_escape "${SV[SEAWEEDFS_S3_SECRET_KEY]}")"
+_sw_ak="$(json_escape "$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)")"
+_sw_sk="$(json_escape "$(sv_dec SEAWEEDFS_S3_SECRET_KEY)")"
 _sw_cfg="$(
   cat <<JSON
 {
@@ -257,41 +251,41 @@ _sw_cfg="$(
 JSON
 )"
 apply_generic langfuse-seaweedfs-s3-secret langfuse-data \
-  "SEAWEEDFS_S3_ACCESS_KEY=${SV[SEAWEEDFS_S3_ACCESS_KEY]}" \
-  "SEAWEEDFS_S3_SECRET_KEY=${SV[SEAWEEDFS_S3_SECRET_KEY]}" \
-  "admin_access_key_id=${SV[SEAWEEDFS_S3_ACCESS_KEY]}" \
-  "admin_secret_access_key=${SV[SEAWEEDFS_S3_SECRET_KEY]}" \
+  "SEAWEEDFS_S3_ACCESS_KEY=$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)" \
+  "SEAWEEDFS_S3_SECRET_KEY=$(sv_dec SEAWEEDFS_S3_SECRET_KEY)" \
+  "admin_access_key_id=$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)" \
+  "admin_secret_access_key=$(sv_dec SEAWEEDFS_S3_SECRET_KEY)" \
   "seaweedfs_s3_config=${_sw_cfg}"
 
 # --- litellm -------------------------------------------------------------------
-apply_basic_auth litellm-pg-app litellm litellm "${SV[LITELLM_PG_PASSWORD]}" litellm
+apply_basic_auth litellm-pg-app litellm litellm "$(sv_dec LITELLM_PG_PASSWORD)" litellm
 
 apply_generic litellm-app-secrets litellm \
-  "LITELLM_MASTER_KEY=${SV[LITELLM_MASTER_KEY]}" \
-  "CLAUDE_CODE_LITELLM_VIRTUAL_KEY=${SV[CLAUDE_CODE_LITELLM_VIRTUAL_KEY]}" \
-  "CODEX_LITELLM_VIRTUAL_KEY=${SV[CODEX_LITELLM_VIRTUAL_KEY]}" \
-  "SMOKE_TEST_LITELLM_VIRTUAL_KEY=${SV[SMOKE_TEST_LITELLM_VIRTUAL_KEY]}" \
-  "LANGFUSE_PUBLIC_KEY=${SV[LANGFUSE_PUBLIC_KEY]}" \
-  "LANGFUSE_SECRET_KEY=${SV[LANGFUSE_SECRET_KEY]}"
+  "LITELLM_MASTER_KEY=$(sv_dec LITELLM_MASTER_KEY)" \
+  "CLAUDE_CODE_LITELLM_VIRTUAL_KEY=$(sv_dec CLAUDE_CODE_LITELLM_VIRTUAL_KEY)" \
+  "CODEX_LITELLM_VIRTUAL_KEY=$(sv_dec CODEX_LITELLM_VIRTUAL_KEY)" \
+  "SMOKE_TEST_LITELLM_VIRTUAL_KEY=$(sv_dec SMOKE_TEST_LITELLM_VIRTUAL_KEY)" \
+  "LANGFUSE_PUBLIC_KEY=$(sv_dec LANGFUSE_PUBLIC_KEY)" \
+  "LANGFUSE_SECRET_KEY=$(sv_dec LANGFUSE_SECRET_KEY)"
 
 # --- lgtm (observability) ------------------------------------------------------
-apply_basic_auth grafana-pg-app lgtm grafana "${SV[GRAFANA_PG_PASSWORD]}" grafana
+apply_basic_auth grafana-pg-app lgtm grafana "$(sv_dec GRAFANA_PG_PASSWORD)" grafana
 
 apply_generic grafana-admin lgtm \
-  "admin-user=${SV[GRAFANA_ADMIN_USER]}" \
-  "admin-password=${SV[GRAFANA_ADMIN_PASSWORD]}"
+  "admin-user=${grafana_admin_user}" \
+  "admin-password=$(sv_dec GRAFANA_ADMIN_PASSWORD)"
 
 # Cross-namespace mirror of the SeaweedFS S3 credentials for Loki and Tempo.
 apply_generic loki-s3-creds lgtm \
-  "SEAWEEDFS_S3_ACCESS_KEY=${SV[SEAWEEDFS_S3_ACCESS_KEY]}" \
-  "SEAWEEDFS_S3_SECRET_KEY=${SV[SEAWEEDFS_S3_SECRET_KEY]}"
+  "SEAWEEDFS_S3_ACCESS_KEY=$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)" \
+  "SEAWEEDFS_S3_SECRET_KEY=$(sv_dec SEAWEEDFS_S3_SECRET_KEY)"
 
 apply_generic tempo-s3-creds lgtm \
-  "SEAWEEDFS_S3_ACCESS_KEY=${SV[SEAWEEDFS_S3_ACCESS_KEY]}" \
-  "SEAWEEDFS_S3_SECRET_KEY=${SV[SEAWEEDFS_S3_SECRET_KEY]}"
+  "SEAWEEDFS_S3_ACCESS_KEY=$(sv_dec SEAWEEDFS_S3_ACCESS_KEY)" \
+  "SEAWEEDFS_S3_SECRET_KEY=$(sv_dec SEAWEEDFS_S3_SECRET_KEY)"
 
 # OTel Collector → Langfuse OTLP HTTP Basic-auth header: `Basic base64(public:secret)`.
-_otel_auth="Basic $(printf '%s:%s' "${SV[LANGFUSE_PUBLIC_KEY]}" "${SV[LANGFUSE_SECRET_KEY]}" | base64 | tr -d '\n')"
+_otel_auth="Basic $(printf '%s:%s' "$(sv_dec LANGFUSE_PUBLIC_KEY)" "$(sv_dec LANGFUSE_SECRET_KEY)" | base64 | tr -d '\n')"
 apply_generic langfuse-otel-basic-auth lgtm \
   "OTEL_EXPORTER_OTLP_LANGFUSE_AUTH=${_otel_auth}"
 

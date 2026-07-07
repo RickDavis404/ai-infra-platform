@@ -42,18 +42,24 @@ verify_chart_pins() {
     return 127
   fi
 
-  local -a kustomizations
-  mapfile -t kustomizations < <(
+  local rc=0 checked=0 kfile rel triple name rest repo version line
+  local -a kustomizations=()
+  local -a triples=()
+  # while/read replaces mapfile (bash 3.2-safe; find avoids globstar).
+  while IFS= read -r line; do
+    kustomizations+=("${line}")
+  done < <(
     find "${k8s_dir}" -type f \( -name kustomization.yaml -o -name kustomization.yml \) | sort
   )
 
-  local rc=0 checked=0 kfile rel triple name rest repo version
-  local -a triples
   for kfile in "${kustomizations[@]:-}"; do
     [[ -n "${kfile}" ]] || continue
     rel="${kfile#"${repo_root}"/}"
     # Extract each helmCharts entry as "name|repo|version"; skip files with none.
-    mapfile -t triples < <(
+    triples=()
+    while IFS= read -r line; do
+      triples+=("${line}")
+    done < <(
       yq eval -r \
         '.helmCharts // [] | .[] | (.name // "") + "|" + (.repo // "") + "|" + (.version // "")' \
         "${kfile}" 2>/dev/null || true

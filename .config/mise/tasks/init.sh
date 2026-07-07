@@ -10,15 +10,21 @@
 # tested (the managed /etc/sudoers.d/lima must exist AND `limactl sudoers --check` must pass —
 # the check alone false-passes on stale passwordless rules) — if it is missing/stale, init
 # PRINTS the exact command for the operator to run under their own sudo and stops there. The
-# host-global `~/.lima/_config/networks.yaml` is NEVER edited; networks are inspected with
-# `limactl network list` and (optionally, on consent) created with `limactl network create`.
+# host-global `~/.lima/_config/networks.yaml` is user-owned (no sudo), and init makes ONE
+# surgical, idempotent edit to it: it sets `.paths.socketVMNet` to the root-owned
+# /opt/socket_vmnet path. Lima auto-generates that key pointing at the uid-owned Homebrew
+# Cellar path, which Lima then REJECTS ("not owned by root") — breaking `lima:start` and
+# emitting an empty /etc/sudoers.d/lima — so the fix must land BEFORE the sudoers step.
+# Network definitions are still only inspected (`limactl network list`) and, on consent,
+# created (`limactl network create`); init never rewrites those by hand.
 #
 # Steps:
-#   1. Assert bash >= 4 and macOS / Apple Silicon (arm64).
+#   1. Assert bash >= 3.2 (stock macOS) and macOS / Apple Silicon (arm64).
 #   2. brew bundle (Brewfile) — bash, socket_vmnet, lima, and the rest.
 #   3. mise install + mise trust (materialize the pinned [tools]).
 #   4. tools:mmdc-setup — puppeteer-managed Chrome for mermaid-cli (mmdc).
-#   5. Lima sudoers (limactl sudoers --check) + socket_vmnet secure path.
+#   5. socket_vmnet secure path + networks.yaml socketVMNet fixup + Lima sudoers
+#      (limactl sudoers --check), in that order.
 #   6. Network + VIP/LB IP plan — confirm/override the network, subnet, CP VIP, LB range;
 #      write the chosen values to the gitignored .config/mise/conf.d/99-local.toml.
 #   7. age key generation + guidance for sealing real secret values into the fnox store.
@@ -59,6 +65,7 @@ readonly DEFAULT_CP_VIP="192.168.105.40"
 readonly DEFAULT_LB_RANGE_START="192.168.105.200"
 readonly DEFAULT_LB_RANGE_STOP="192.168.105.250"
 readonly SOCKET_VMNET_BIN="/opt/socket_vmnet/bin/socket_vmnet"
+readonly LIMA_NETWORKS_YAML="${HOME}/.lima/_config/networks.yaml"
 readonly AGE_KEY="${REPO_ROOT}/secrets/age/key.txt"
 readonly LOCAL_OVERRIDE="${REPO_ROOT}/.config/mise/conf.d/99-local.toml"
 readonly GITIGNORE="${REPO_ROOT}/.gitignore"
@@ -170,11 +177,13 @@ warn_if_busy() {
 }
 
 # --- Step 1: platform assertions ----------------------------------------------
-step 1 "Platform prerequisites (bash >= 4, macOS arm64)"
-if [[ "${BASH_VERSINFO[0]:-0}" -ge 4 ]]; then
-  info "bash ${BASH_VERSION} (>= 4) OK"
+# The task scripts avoid mapfile and associative arrays, so the stock macOS bash
+# (3.2) is sufficient — no Homebrew bash on PATH is required.
+step 1 "Platform prerequisites (bash >= 3.2, macOS arm64)"
+if [[ "${BASH_VERSINFO[0]:-0}" -gt 3 || ("${BASH_VERSINFO[0]:-0}" -eq 3 && "${BASH_VERSINFO[1]:-0}" -ge 2) ]]; then
+  info "bash ${BASH_VERSION} (>= 3.2) OK"
 else
-  die "bash ${BASH_VERSION:-unknown} is too old (need >= 4). Install Homebrew bash and ensure /opt/homebrew/bin precedes /usr/bin on PATH, then re-run."
+  die "bash ${BASH_VERSION:-unknown} is too old (need >= 3.2, the stock macOS version)."
 fi
 if [[ "$(uname -s)" == "Darwin" ]]; then
   info "platform: macOS (Darwin) OK"
@@ -225,17 +234,55 @@ else
   warn "mmdc is not on PATH yet — run 'mise install' (step 3) first, then re-run init for the Chrome setup."
 fi
 
-# --- Step 5: Lima sudoers + socket_vmnet secure path --------------------------
-step 5 "Lima shared network (sudoers + socket_vmnet)"
+# --- Step 5: socket_vmnet path + networks.yaml + Lima sudoers ------------------
+# Order matters: (a) socket_vmnet at the root-owned /opt path, (b) networks.yaml
+# .paths.socketVMNet pointed at that same /opt path, THEN (c) the Lima sudoers file —
+# so the sudoers rules reference the corrected path and come out non-empty.
+step 5 "Lima shared network (socket_vmnet + networks.yaml + sudoers)"
 info "The cluster uses a Lima socket_vmnet network — real L2 — so the Mac reaches the control-plane VIP and the Cilium service VIPs directly."
 
+# (a) socket_vmnet secure binary. Homebrew installs it under /opt/homebrew, but Lima
+# only accepts a root-owned copy under /opt/socket_vmnet — so it must be copied there
+# with sudo (init never runs sudo; it prints the exact commands).
 if [[ -x "${SOCKET_VMNET_BIN}" ]]; then
   info "socket_vmnet secure binary present at ${SOCKET_VMNET_BIN} OK"
 else
   warn "socket_vmnet secure binary is MISSING at ${SOCKET_VMNET_BIN}."
-  warn "Install it via 'brew bundle' (step 2) — Lima expects it under a root-only path. Re-run init after installing."
+  warn "Homebrew installs socket_vmnet under /opt/homebrew, but Lima requires it at a"
+  warn "root-owned path. Copy it there with YOUR sudo in another shell:"
+  printf '\n    sudo mkdir -p /opt/socket_vmnet/bin\n    sudo cp "$(brew --prefix socket_vmnet)/bin/socket_vmnet" /opt/socket_vmnet/bin/socket_vmnet\n    sudo chown -R root:wheel /opt/socket_vmnet\n    sudo chmod 755 /opt/socket_vmnet/bin/socket_vmnet\n\n' >&2
+  warn "init does NOT run sudo for you. Run the commands above, then re-run 'mise run init' (or 'mise run up')."
 fi
 
+# (b) networks.yaml .paths.socketVMNet -> the root-owned /opt path. Lima auto-generates
+# this key with the uid-owned Homebrew Cellar path, which it then REJECTS ("not owned by
+# root") — that breaks lima:start AND makes `limactl sudoers` write an empty
+# /etc/sudoers.d/lima. Set ONLY that one key (preserve everything else Lima generated).
+# No sudo needed; the file is user-owned. Idempotent (safe to re-run).
+if command -v yq >/dev/null 2>&1; then
+  # Materialize Lima's default networks.yaml first if it doesn't exist yet.
+  if [[ ! -f "${LIMA_NETWORKS_YAML}" ]] && command -v limactl >/dev/null 2>&1; then
+    limactl network list >/dev/null 2>&1 || true
+  fi
+  if [[ -f "${LIMA_NETWORKS_YAML}" ]]; then
+    current_socketvmnet="$(yq '.paths.socketVMNet // ""' "${LIMA_NETWORKS_YAML}" 2>/dev/null || true)"
+    if [[ "${current_socketvmnet}" == "${SOCKET_VMNET_BIN}" ]]; then
+      info "networks.yaml .paths.socketVMNet already ${SOCKET_VMNET_BIN} OK"
+    elif yq -i ".paths.socketVMNet = \"${SOCKET_VMNET_BIN}\"" "${LIMA_NETWORKS_YAML}"; then
+      info "Set networks.yaml .paths.socketVMNet -> ${SOCKET_VMNET_BIN} (was: ${current_socketvmnet:-<unset>})."
+    else
+      warn "Failed to patch ${LIMA_NETWORKS_YAML}; set .paths.socketVMNet to ${SOCKET_VMNET_BIN} by hand before 'mise run up'."
+    fi
+  else
+    warn "Lima networks.yaml not found at ${LIMA_NETWORKS_YAML} and could not be generated (limactl missing?)."
+    warn "After 'brew bundle' installs Lima, re-run init so it can set .paths.socketVMNet to ${SOCKET_VMNET_BIN}."
+  fi
+else
+  warn "yq not on PATH — cannot set .paths.socketVMNet in ${LIMA_NETWORKS_YAML}."
+  warn "Run 'mise install' (step 3) then re-run init, or set it by hand to ${SOCKET_VMNET_BIN}."
+fi
+
+# (c) Lima sudoers — runs AFTER (a)+(b) so its rules reference the corrected path.
 if command -v limactl >/dev/null 2>&1; then
   # `limactl sudoers --check` ALONE is NOT sufficient: it returns OK whenever ANY
   # passwordless sudo exists (e.g. leftover NOPASSWD rules for an OLDER socket_vmnet
@@ -265,8 +312,9 @@ fi
 # --- Step 6: network + VIP/LB IP plan -----------------------------------------
 step 6 "Network + VIP / LoadBalancer IP plan"
 
-# Show existing networks (read-only). We NEVER edit ~/.lima/_config/networks.yaml;
-# Lima has a real CLI for this.
+# Show existing networks (read-only). Aside from the single .paths.socketVMNet key
+# corrected in Step 5, init does not hand-edit ~/.lima/_config/networks.yaml — network
+# definitions are inspected and created through Lima's CLI.
 if command -v limactl >/dev/null 2>&1; then
   info "Existing Lima networks (limactl network list, read-only):"
   limactl network list >&2 || warn "limactl network list failed — continuing with defaults."
@@ -479,6 +527,27 @@ if [[ -f "${REPO_ROOT}/secrets/shared.env" ]]; then
   fi
 fi
 warn "Write-once values LANGFUSE_SALT and LANGFUSE_ENCRYPTION_KEY must NEVER be rotated after first boot."
+
+# --- Codex OAuth token into the repo-local $CODEX_HOME -------------------------
+# mise points CODEX_HOME at .config/codex/ so a bare `codex` reads the provider-wired
+# user config there and routes through the gateway. Codex also reads auth.json (the
+# ChatGPT/OpenAI subscription OAuth token) from $CODEX_HOME, so without a token there
+# bare codex reports "not logged in" even when ~/.codex is authed. Symlink the
+# repo-local path to ~/.codex/auth.json so the latter stays the single source of truth
+# (token refresh writes through the link). The link + its target are gitignored; only
+# the provider config and pinned catalog under .config/codex/ are committed.
+CODEX_HOME_DIR="${REPO_ROOT}/.config/codex"
+CODEX_AUTH_LINK="${CODEX_HOME_DIR}/auth.json"
+if [[ -e "${HOME}/.codex/auth.json" && ! -e "${CODEX_AUTH_LINK}" && ! -L "${CODEX_AUTH_LINK}" ]]; then
+  mkdir -p "${CODEX_HOME_DIR}"
+  if ln -s "${HOME}/.codex/auth.json" "${CODEX_AUTH_LINK}"; then
+    info "Linked ${CODEX_AUTH_LINK#"${REPO_ROOT}/"} -> ~/.codex/auth.json (Codex OAuth token; gitignored)."
+  else
+    warn "Could not link ~/.codex/auth.json into ${CODEX_HOME_DIR#"${REPO_ROOT}/"}; bare codex may report 'not logged in'."
+  fi
+else
+  info "Codex auth.json link under .config/codex/ already present or ~/.codex/auth.json not yet created — skipping."
+fi
 
 # --- Step 8: next step --------------------------------------------------------
 step 8 "Next"

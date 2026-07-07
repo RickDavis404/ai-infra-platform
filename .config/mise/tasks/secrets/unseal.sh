@@ -57,7 +57,11 @@ fnox -c "$fnox_local" export -f env -o "$dec" >/dev/null 2>&1 ||
 chmod 600 "$dec" # macOS/BSD chmod rejects `--`
 
 # Log key NAMES + count only; never the values.
-mapfile -t keys < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$dec" | sed -E 's/=.*//' | sort -u)
+# while/read replaces mapfile (bash 3.2-safe).
+keys=()
+while IFS= read -r _key; do
+  keys+=("$_key")
+done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$dec" | sed -E 's/=.*//' | sort -u)
 log_info "Decrypted ${#keys[@]} key(s) into secrets/shared.env.dec (gitignored). Key names:"
 for k in "${keys[@]}"; do
   log_info "  - ${k}"

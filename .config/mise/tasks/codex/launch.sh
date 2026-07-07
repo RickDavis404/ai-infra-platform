@@ -35,10 +35,12 @@ GRAFANA_USERNAME="${GRAFANA_USERNAME:-admin}"
 GRAFANA_PASSWORD="$(fnox_decrypt GRAFANA_ADMIN_PASSWORD)"
 LANGFUSE_PUBLIC_KEY="$(fnox_decrypt LANGFUSE_PUBLIC_KEY)"
 LANGFUSE_SECRET_KEY="$(fnox_decrypt LANGFUSE_SECRET_KEY)"
+LANGFUSE_MCP_AUTH_HEADER="Basic $(printf '%s:%s' "${LANGFUSE_PUBLIC_KEY}" "${LANGFUSE_SECRET_KEY}" | base64 | tr -d '\n')"
+export LANGFUSE_MCP_AUTH_HEADER
 
-# Placeholder default model alias; the real on-disk path is resolved by the
-# gateway via AI_INFRA_DEFAULT_CHAT_MODEL_PATH (§9), never hardcoded here.
-model="${CODEX_MODEL:-mac-local/unsloth/qwen3.5-4b-mtp-ud-q8-k-xl-gguf}"
+# Default to Codex's bundled OpenAI/Codex model catalog; CODEX_MODEL may still
+# override this for one-off operator checks.
+model="${CODEX_MODEL:-gpt-5.5}"
 
 info "launching codex against the LiteLLM gateway VIP (${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000)"
 
@@ -51,10 +53,14 @@ exec codex \
   --config model_provider='"litellm_local"' \
   --config 'model_providers.litellm_local.name="LiteLLM Local"' \
   --config "model_providers.litellm_local.base_url=\"http://${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000/v1\"" \
+  --config 'model_providers.litellm_local.requires_openai_auth=true' \
   --config 'model_providers.litellm_local.wire_api="responses"' \
+  --config 'model_providers.litellm_local.supports_websockets=false' \
+  --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
   --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\" }" \
   --config "mcp_servers.grafana.env.GRAFANA_USERNAME=\"${GRAFANA_USERNAME}\"" \
   --config "mcp_servers.grafana.env.GRAFANA_PASSWORD=\"${GRAFANA_PASSWORD}\"" \
-  --config "mcp_servers.langfuse.env.LANGFUSE_PUBLIC_KEY=\"${LANGFUSE_PUBLIC_KEY}\"" \
-  --config "mcp_servers.langfuse.env.LANGFUSE_SECRET_KEY=\"${LANGFUSE_SECRET_KEY}\"" \
+  --config 'mcp_servers.langfuse.enabled=false' \
+  --config "mcp_servers.langfuse_http.url=\"http://${AI_INFRA_LANGFUSE_VIP:-192.168.105.201}:3000/api/public/mcp\"" \
+  --config 'mcp_servers.langfuse_http.env_http_headers={ Authorization = "LANGFUSE_MCP_AUTH_HEADER" }' \
   "$@"

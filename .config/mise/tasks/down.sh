@@ -41,7 +41,7 @@ k8s_teardown() {
     operators/clickhouse-operator operators/cnpg namespaces; do
     local dir="${REPO_ROOT}/kubernetes/${rel}"
     [ -d "${dir}" ] || continue
-    kustomize build --enable-helm "${dir}" 2>/dev/null |
+    kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${dir}" 2>/dev/null |
       kc delete --ignore-not-found=true -f - 2>/dev/null ||
       warn "k8s teardown: delete of overlay ${rel} reported errors (continuing)"
   done

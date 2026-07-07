@@ -28,7 +28,10 @@ if ! command -v yamllint >/dev/null 2>&1; then
 fi
 
 # Gather candidate YAML files, excluding generated/secret/cache paths.
-mapfile -t yamls < <(
+yamls=()
+while IFS= read -r yaml_file; do
+  yamls+=("${yaml_file}")
+done < <(
   find . \
     -type d \( \
     -name .git -o \
@@ -51,16 +54,43 @@ printf 'yamllint: linting %d file(s) with %s ...\n' "${#yamls[@]}" "${config#"${
 yamllint -c "${config}" -- "${yamls[@]}"
 
 # Structural multi-document parse (catches separators yamllint may pass).
-# yamllint is installed via the mise `pipx:yamllint` backend, which bundles PyYAML
-# inside the tool's own venv. Resolve that venv's interpreter from the yamllint
-# shebang so `import yaml` works without polluting any host/mise python. Fall back
-# to a plain python3 only if it can already import yaml.
+# yamllint is installed via the mise `pipx:yamllint` backend (uv under the hood),
+# which bundles PyYAML inside the tool's own venv. Resolve that venv interpreter so
+# `import yaml` works without polluting any host/mise python. The launcher shebang
+# varies by installer/version — a direct `#!/…/venv/bin/python`, sometimes with a
+# trailing `-E`, and newer uv writes a `#!/bin/sh` polyglot wrapper — so resolve it
+# defensively before falling back to a host python3.
 yaml_py=""
 yl_bin="$(command -v yamllint)"
-cand="$(head -n 1 "${yl_bin}" | sed -n 's/^#![[:space:]]*//p')"
-if [[ -x "${cand}" ]] && "${cand}" -c 'import yaml' >/dev/null 2>&1; then
-  yaml_py="${cand}"
-elif command -v python3 >/dev/null 2>&1 && python3 -c 'import yaml' >/dev/null 2>&1; then
+
+# (1) The shebang's FIRST token (drop any `-E`/flags so the -x test still matches).
+shebang_interp="$(sed -n '1s/^#![[:space:]]*//p' "${yl_bin}" | awk '{print $1}')"
+if [[ -n "${shebang_interp}" && -x "${shebang_interp}" ]] &&
+  "${shebang_interp}" -c 'import yaml' >/dev/null 2>&1; then
+  yaml_py="${shebang_interp}"
+fi
+
+# (2) uv's `#!/bin/sh` wrapper hides the interpreter; the venv `python` still sits
+#     beside the resolved entry-point. Follow the symlink chain by hand (stock macOS
+#     `readlink` has no -f) and try that sibling `python`.
+if [[ -z "${yaml_py}" ]]; then
+  link="${yl_bin}"
+  while [[ -L "${link}" ]]; do
+    target="$(readlink "${link}")"
+    case "${target}" in
+    /*) link="${target}" ;;
+    *) link="${link%/*}/${target}" ;;
+    esac
+  done
+  venv_py="${link%/*}/python"
+  if [[ -x "${venv_py}" ]] && "${venv_py}" -c 'import yaml' >/dev/null 2>&1; then
+    yaml_py="${venv_py}"
+  fi
+fi
+
+# (3) Fall back to a plain python3 only if it can already import yaml.
+if [[ -z "${yaml_py}" ]] && command -v python3 >/dev/null 2>&1 &&
+  python3 -c 'import yaml' >/dev/null 2>&1; then
   yaml_py="python3"
 fi
 

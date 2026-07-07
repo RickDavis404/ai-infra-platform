@@ -53,11 +53,17 @@ declare -F kc >/dev/null 2>&1 || kc() {
 }
 
 readonly K8S_DIR="${REPO_ROOT}/kubernetes"
-# 600s (not 300s): a cold first-run CNPG 3-instance clone (primary initdb + 2
-# pg_basebackup replicas, with image pulls) and the Langfuse v3 web migration
-# (Prisma + ClickHouse) can each brush past 5 minutes; 10 minutes gives headroom so
-# the first `mise run up` completes in one shot instead of a benign retry.
-readonly WAIT_TIMEOUT="${WAIT_TIMEOUT:-600s}"
+# 1200s (not 600s): on constrained Apple-Silicon Lima hardware the Langfuse v3 web
+# first-boot is the long pole — Prisma + 34 ClickHouse migrations (~6 min) THEN ~4 min
+# of app init (ClickHouse compat, langfuse MCP feature registration, cache warmup)
+# before /api/public/health first answers: MEASURED ~10 min end to end on a fresh DB.
+# The langfuse-web startupProbe budget was raised to match (20 min), so the rollout
+# wait must also allow it or `wait_rollout` dies before the single migrating pod goes
+# Ready (observed: 600s expired mid first-boot -> "rollout did not complete"). A cold
+# CNPG 3-instance clone (initdb + 2 pg_basebackup replicas w/ image pulls) also brushes
+# past 5 min. 20 minutes gives headroom so the first `mise run up` completes in one
+# shot; fast rollouts return as soon as they are Ready, so this only raises the ceiling.
+readonly WAIT_TIMEOUT="${WAIT_TIMEOUT:-1200s}"
 
 # Helm Capabilities.APIVersions advertised to `kustomize build --enable-helm`.
 # Some charts gate optional objects behind a render-time CRD-presence check
@@ -101,10 +107,35 @@ vip_sed_args() {
   done
 }
 
+# Profile selector (lean DEFAULT vs AI_INFRA_PROFILE=ha). Echoes "<rel>/lean" when
+# the lean profile is active AND a co-located lean/ overlay exists for that unit,
+# else the base "<rel>". Only the four units carrying lean deltas (langfuse-data,
+# lgtm, langfuse, litellm) ship a lean/ overlay; every other unit is
+# profile-invariant and resolves to itself. Unset => lean (the default single-node
+# posture, `mise run up`); AI_INFRA_PROFILE=ha selects the HA base (`mise run up:ha`).
+# The up/up:ha/up:lean tasks set this var — users never set it by hand. See
+# kubernetes/README.md + docs/profiles.md + planning/ha-lean-overlay-plan.md.
+profile_target() {
+  local rel="$1"
+  if [[ "${AI_INFRA_PROFILE:-lean}" == "lean" && -d "${K8S_DIR}/${rel}/lean" ]]; then
+    printf '%s/lean\n' "${rel}"
+  else
+    printf '%s\n' "${rel}"
+  fi
+}
+
 # kustomize build (helm-enabled) of an overlay, applied server-side. The rendered
 # stream is piped through sed to rewrite default LB VIPs to their env overrides
 # (literal-defaults-render-standalone, sed-at-apply; see header). When no VIP env
 # differs from the default, SED_VIP_ARGS is empty and `sed` passes the stream through.
+#
+# `--load-restrictor LoadRestrictionsNone` is REQUIRED for the AI_INFRA_PROFILE=lean
+# overlays: their chart-redeclare kustomizations (valkey/seaweedfs/loki lean) point
+# the Helm inflator at the base values one directory up (`valuesFile: ../values.yaml`
+# + `additionalValuesFiles: [../values-lean.yaml]`), and kustomize's default
+# root-only restrictor rejects a value file above the kustomization root. The flag is
+# a no-op for the HA bases (no out-of-root file refs). This is a read of committed,
+# in-repo values only — no untrusted kustomizations are processed here.
 #
 # The apply is RETRIED on transient failures. An overlay that creates custom
 # resources guarded by an operator's admission webhook (e.g. CNPG `Cluster` ->
@@ -127,15 +158,20 @@ apply_overlay() {
     rc=0
     # Capture combined output so we can both surface it and inspect it for a
     # retryable (transient) signature. PIPESTATUS[2] is the kubectl apply status.
-    out="$(kustomize build --enable-helm "${HELM_API_VERSIONS[@]}" "${dir}" 2>&1 |
+    out="$(kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${HELM_API_VERSIONS[@]}" "${dir}" 2>&1 |
       sed "${SED_VIP_ARGS[@]}" |
       kc apply --server-side --force-conflicts -f - 2>&1)" || rc=1
     printf '%s\n' "${out}"
     if ((rc == 0)); then
       return 0
     fi
-    # Only retry KNOWN-transient failures (webhook unavailability / API blips).
-    if printf '%s' "${out}" | grep -qiE 'failed calling webhook|connection refused|: EOF|timeout|TLS handshake|i/o timeout|etcdserver: leader changed|the server is currently unable'; then
+    # Only retry KNOWN-transient failures: webhook unavailability, API blips, and
+    # host->kube-vip API VIP connection drops over socket_vmnet under load (connection
+    # reset by peer / http2 connection lost / broken pipe / mid-response read error).
+    # The last class intermittently bites a mid-apply on this Lima/socket_vmnet
+    # substrate (host 192.168.105.1 -> VIP 192.168.105.40:6443) and MUST be retried so a
+    # hands-off `up` survives it instead of dying on one transient blip.
+    if printf '%s' "${out}" | grep -qiE 'failed calling webhook|connection refused|connection reset by peer|unexpected error when reading response body|http2: |broken pipe|: EOF|timeout|TLS handshake|i/o timeout|etcdserver: leader changed|the server is currently unable'; then
       if ((attempt < APPLY_RETRIES)); then
         warn "apply ${rel}: transient error (attempt ${attempt}/${APPLY_RETRIES}); retrying in ${APPLY_RETRY_DELAY}s"
         sleep "${APPLY_RETRY_DELAY}"
@@ -360,14 +396,14 @@ main() {
     die "clickhouse-operator did not become Available"
 
   # 4) Data plane (stores): CNPG clusters, ClickHouse + Keeper, Valkey, SeaweedFS.
-  apply_overlay "langfuse-data"
+  apply_overlay "$(profile_target langfuse-data)"
   # CNPG Clusters report Ready via the cnpg.io Cluster condition; ClickHouse via CHI.
   wait_condition "langfuse-data" "condition=Ready" "cluster/langfuse-pg"
   wait_condition "langfuse-data" "jsonpath={.status.status}=Completed" \
     "clickhouseinstallation/langfuse-ch"
 
   # 5) Observability plane (lgtm): Grafana/Loki/Tempo/Prometheus/OTel/Alloy.
-  apply_overlay "lgtm"
+  apply_overlay "$(profile_target lgtm)"
 
   # 6) Langfuse (web + worker) — depends on langfuse-data stores being Ready.
   #    Prisma migrations run in the langfuse-web entrypoint. With >1 web replica the
@@ -378,12 +414,18 @@ main() {
   #    still pulling the image, well before they reach the migration), let the single
   #    pod run all Postgres + ClickHouse migrations and go Ready, THEN scale back to the
   #    values target (the new pods find migrations already applied -> no-op, no race).
-  apply_overlay "langfuse"
+  # Resolve the profile-selected langfuse dir ONCE: the apply, and the scale-back
+  # target read below, must both point at the same overlay (base for HA, langfuse/lean
+  # for AI_INFRA_PROFILE=lean) so the post-migration replica count matches what was
+  # applied (2 for HA, 1 for lean).
+  local lf_dir
+  lf_dir="$(profile_target langfuse)"
+  apply_overlay "${lf_dir}"
   info "serializing langfuse-web migration: pinning to 1 replica while it migrates"
   kc -n langfuse scale deploy/langfuse-web --replicas=1
   wait_rollout "langfuse" "deploy/langfuse-web"
   local lf_web
-  lf_web="$(kustomize build --enable-helm "${HELM_API_VERSIONS[@]}" "${REPO_ROOT}/kubernetes/langfuse" 2>/dev/null |
+  lf_web="$(kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${HELM_API_VERSIONS[@]}" "${K8S_DIR}/${lf_dir}" 2>/dev/null |
     yq 'select(.kind=="Deployment" and .metadata.name=="langfuse-web") | .spec.replicas' 2>/dev/null |
     grep -E '^[0-9]+$' | head -1)"
   info "langfuse-web migration done; scaling to target replicas (${lf_web:-2})"
@@ -391,7 +433,7 @@ main() {
   wait_rollout "langfuse" "deploy/langfuse-web" "deploy/langfuse-worker"
 
   # 7) LiteLLM (+ its CNPG litellm-pg) — raw manifests.
-  apply_overlay "litellm"
+  apply_overlay "$(profile_target litellm)"
   wait_condition "litellm" "condition=Ready" "cluster/litellm-pg"
   wait_rollout "litellm" "deploy/litellm"
 

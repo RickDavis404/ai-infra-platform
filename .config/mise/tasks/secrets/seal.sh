@@ -47,7 +47,11 @@ recipients_file="${secrets_dir}/.agerecipients"
 # key, shared.env and .agerecipients still live under secrets/.
 fnox_local="${REPO_ROOT}/fnox.local.toml"
 age_key="${secrets_dir}/age/key.txt"
-example_recipient="age1zrqtwyccjmjl9607qvthjm06c3vm3vu9egual3yzj33czh38nvkqw0wgvq"
+# Committed placeholder recipient to REFUSE sealing to (single source of truth in
+# lib/secrets.sh, already sourced above; literal fallback is a set -u safety net). Was
+# a stale rotated-out key (age1zrqtwy…) that no longer matched the committed recipient,
+# so this refuse-to-seal guard was dead.
+example_recipient="${AI_INFRA_PLACEHOLDER_AGE_RECIPIENT:-age1askmfmrkjf7ln3drgngdz2txt88nd4spgv52f6ekcu9hpv3gpy6skp79sf}"
 
 [[ -f "$plain" ]] || die "secrets/shared.env not found — run 'mise run secrets:generate' first."
 [[ -f "$recipients_file" ]] || die "secrets/.agerecipients not found."
@@ -59,9 +63,6 @@ example_recipient="age1zrqtwyccjmjl9607qvthjm06c3vm3vu9egual3yzj33czh38nvkqw0wgv
 if grep -qxF "${example_recipient}" "$recipients_file" ||
   grep -qF "${example_recipient}" "$fnox_local"; then
   die "age recipients still include the committed example recipient. Run 'mise run secrets:keygen' to sync your real public recipient first."
-fi
-if grep -qE '^age1placeholderrecipient' "$recipients_file"; then
-  die "secrets/.agerecipients still contains the placeholder recipient. Run 'mise run secrets:keygen' first."
 fi
 if [[ -f "$age_key" ]]; then
   require_cmd age-keygen
@@ -77,19 +78,15 @@ fi
 # pointed explicitly at the gitignored local store via -c.
 cd -- "$secrets_dir"
 
-# Load KEY=value lines without sourcing the file.
-declare -A sv=()
-while IFS= read -r line || [[ -n "$line" ]]; do
-  [[ "$line" =~ ^[[:space:]]*# ]] && continue
-  [[ "$line" =~ ^[[:space:]]*$ ]] && continue
-  [[ "$line" == *=* ]] || continue
-  key="${line%%=*}"
-  val="${line#*=}"
-  val="${val%$'\r'}"
-  [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-  sv["$key"]="$val"
-done <"$plain"
-[[ "${#sv[@]}" -gt 0 ]] || die "no KEY=value lines found in secrets/shared.env"
+# Enumerate the key NAMES present in secrets/shared.env without sourcing it and
+# without an associative array (bash 3.2-safe). Values are read on demand via
+# sv_get so a value is never word-split, run as a command, or logged. Duplicate
+# keys collapse to one (sort -u), matching the previous last-write-wins map load.
+present_keys=()
+while IFS= read -r key; do
+  [[ -n "$key" ]] && present_keys+=("$key")
+done < <(grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' "$plain" | sed 's/=$//' | sort -u)
+[[ "${#present_keys[@]}" -gt 0 ]] || die "no KEY=value lines found in secrets/shared.env"
 
 known_unsealed_keys=(
   GRAFANA_ADMIN_USER
@@ -105,11 +102,11 @@ known_unsealed_keys=(
 missing=()
 placeholders=()
 for key in "${AI_INFRA_FNOX_SECRET_KEYS[@]}"; do
-  if [[ -z "${sv[${key}]+x}" ]]; then
+  if ! val="$(sv_get "$plain" "$key")"; then
     missing+=("${key}")
     continue
   fi
-  if ai_infra_secret_is_placeholder "${sv[${key}]}"; then
+  if ai_infra_secret_is_placeholder "${val}"; then
     placeholders+=("${key}")
   fi
 done
@@ -125,7 +122,7 @@ if ((${#missing[@]} || ${#placeholders[@]})); then
 fi
 
 unknown=()
-for key in "${!sv[@]}"; do
+for key in "${present_keys[@]}"; do
   if ai_infra_key_in_list "$key" "${AI_INFRA_FNOX_SECRET_KEYS[@]}" ||
     ai_infra_key_in_list "$key" "${AI_INFRA_SHARED_ENV_OPTIONAL_KEYS[@]}" ||
     ai_infra_key_in_list "$key" "${known_unsealed_keys[@]}"; then
@@ -142,7 +139,7 @@ for k in "${AI_INFRA_FNOX_SECRET_KEYS[@]}"; do
   log_info "  - ${k}: $(ai_infra_secret_description "$k")"
 done
 for k in "${AI_INFRA_SHARED_ENV_OPTIONAL_KEYS[@]}"; do
-  if [[ -n "${sv[${k}]+x}" ]] && ! ai_infra_secret_is_placeholder "${sv[${k}]}"; then
+  if val="$(sv_get "$plain" "$k")" && ! ai_infra_secret_is_placeholder "${val}"; then
     log_warn "  - ${k}: present but intentionally NOT sealed ($(ai_infra_secret_description "$k"))"
   fi
 done
@@ -152,7 +149,7 @@ done
 # secret never appears in argv (ps) or logs.
 sealed=0
 for key in "${AI_INFRA_FNOX_SECRET_KEYS[@]}"; do
-  printf '%s' "${sv[${key}]}" | fnox -c "$fnox_local" set --provider age "$key" >/dev/null ||
+  sv_get "$plain" "$key" | fnox -c "$fnox_local" set --provider age "$key" >/dev/null ||
     die "fnox set failed for key: ${key}"
   sealed=$((sealed + 1))
 done

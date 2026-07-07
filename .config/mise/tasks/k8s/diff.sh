@@ -75,7 +75,7 @@ render_only() {
   while IFS= read -r rel; do
     info "render: ${rel}"
     printf -- '---\n# source: kubernetes/%s\n' "${rel}"
-    if ! kustomize build --enable-helm "${HELM_API_VERSIONS[@]}" "${K8S_DIR}/${rel}"; then
+    if ! kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${HELM_API_VERSIONS[@]}" "${K8S_DIR}/${rel}"; then
       err "render failed for kubernetes/${rel} (offline helm-repo fetch? run with network access)"
       rc=1
     fi
@@ -91,7 +91,7 @@ diff_live() {
     info "diff: ${rel}"
     # `kubectl diff` exits 1 when there IS a diff (not an error). Capture and map.
     set +e
-    kustomize build --enable-helm "${HELM_API_VERSIONS[@]}" "${K8S_DIR}/${rel}" |
+    kustomize build --enable-helm --load-restrictor LoadRestrictionsNone "${HELM_API_VERSIONS[@]}" "${K8S_DIR}/${rel}" |
       kc diff --server-side -f -
     status=${PIPESTATUS[1]}
     set -e
