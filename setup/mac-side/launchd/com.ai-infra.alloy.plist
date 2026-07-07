@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.ai-infra.alloy.plist — launchd user agent for the Mac-side host telemetry
+  shipper (Grafana Alloy).
+
+  Representative template. `__HOME__` is substituted with the user's real home
+  directory by scripts/host/up.sh at install time. Install to
+  ~/Library/LaunchAgents/ and load with
+  `launchctl bootstrap gui/$(id -u) <plist>`.
+
+  The `alloy` binary is the Homebrew-installed `grafana-alloy` formula
+  (/opt/homebrew/bin/alloy) — no manual staging needed (unlike the former
+  otelcol-contrib, which had no formula). Alloy exposes NO inbound public port; its
+  built-in HTTP/UI server is pinned to 127.0.0.1:12345 via --server.http.listen-addr,
+  and every telemetry receiver in the config binds 127.0.0.1. --storage.path points
+  at a writable per-user dir because launchd runs the agent with CWD=/ (Alloy's
+  default relative data-alloy/ path would be unwritable). --stability.level=public-preview
+  is required because the config uses the public-preview otelcol.receiver.filelog
+  component. It exports OTLP/HTTP to the in-cluster Collector at the Cilium service
+  VIP http://192.168.105.203:4318/v1/*.
+-->
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.ai-infra.alloy</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>/opt/homebrew/bin/alloy</string>
+      <string>run</string>
+      <string>--stability.level=public-preview</string>
+      <string>--server.http.listen-addr=127.0.0.1:12345</string>
+      <string>--storage.path=__HOME__/.local/state/ai-infra/alloy</string>
+      <string>__HOME__/.config/ai-infra/alloy-config.alloy</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
+      <key>HOME</key>
+      <string>__HOME__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/alloy.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/ai-infra/alloy.log</string>
+  </dict>
+</plist>

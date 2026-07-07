@@ -1,0 +1,169 @@
+// setup/mac-side/alloy-config.alloy
+//
+// Mac-side host telemetry shipper — Grafana Alloy (Homebrew formula `grafana-alloy`,
+// binary `alloy`). Functional port of the former otelcol-contrib config: it scrapes
+// the llama-swap aggregate (:38080, job llama-swap) and the macmon exporter
+// (:39300, job macmon), collects host metrics, tails the llama-swap + llama-server
+// stderr logs, stamps host identity + the universal lab attributes, and exports
+// OTLP/HTTP to the in-cluster Collector at the Cilium service VIP
+// http://192.168.105.203:4318/v1/{metrics,logs} — reachable DIRECTLY because the Mac
+// is on the same 192.168.105.0/24 L2 (D005 / ha-networking.md §4). This agent exposes
+// NO inbound public port; Alloy's built-in HTTP/UI server binds 127.0.0.1:12345 via
+// the launchd `--server.http.listen-addr` flag (see com.ai-infra.alloy.plist). The
+// otelcol.receiver.filelog components below are public-preview, so both `alloy run`
+// (the launchd agent) and `alloy validate` need `--stability.level=public-preview`.
+//
+// One deliberate schema change vs otelcol: Alloy ships no otelcol.receiver.hostmetrics,
+// so host metrics come from prometheus.exporter.unix (node_exporter, Darwin collectors:
+// cpu/load/mem/disk/filesystem/netdev/thermal). Host-metric names therefore follow the
+// node_exporter `node_*` schema rather than the OTel `system.*` schema. The llama-swap
+// and macmon Prometheus scrapes, the two log streams, the identity/source attributes,
+// and the OTLP/HTTP export target are otherwise unchanged.
+//
+// Hard rule (unchanged): the Prometheus scrapes hit ONLY the aggregate
+// 127.0.0.1:38080/metrics (job llama-swap) and 127.0.0.1:39300/metrics (job macmon).
+// They MUST NOT scrape llama-swap per-model /upstream/<model>/metrics — every scrape
+// there auto-LOADS the model (spawns a fresh llama-server), thrashing the host.
+
+// ─── Metric sources ──────────────────────────────────────────────────────────
+
+// Darwin host metrics (replaces the otelcol `hostmetrics` receiver). node_exporter
+// runs the OS-supported collectors on Darwin (cpu, load, memory, disk, filesystem,
+// network, thermal); unsupported collectors are no-ops. Emits `node_*` metrics.
+prometheus.exporter.unix "host" { }
+
+prometheus.scrape "host" {
+	job_name        = "hostmetrics"
+	targets         = prometheus.exporter.unix.host.targets
+	scrape_interval = "15s"
+	forward_to      = [otelcol.receiver.prometheus.metrics.receiver]
+}
+
+// Aggregate llama-swap /metrics (job llama-swap, 15s). NO per-model /upstream targets.
+prometheus.scrape "llama_swap" {
+	job_name        = "llama-swap"
+	targets         = [{"__address__" = "127.0.0.1:38080"}]
+	scrape_interval = "15s"
+	forward_to      = [otelcol.receiver.prometheus.metrics.receiver]
+}
+
+// macmon exporter /metrics (job macmon, 5s). scrape_timeout must be <= the 5s
+// interval (Prometheus rejects scrape_timeout > scrape_interval); the default is 10s.
+prometheus.scrape "macmon" {
+	job_name        = "macmon"
+	targets         = [{"__address__" = "127.0.0.1:39300"}]
+	scrape_interval = "5s"
+	scrape_timeout  = "5s"
+	forward_to      = [otelcol.receiver.prometheus.metrics.receiver]
+}
+
+// Bridge the scraped Prometheus metrics into the OTLP pipeline.
+otelcol.receiver.prometheus "metrics" {
+	output {
+		metrics = [otelcol.processor.transform.identity.input]
+	}
+}
+
+// ─── Log sources ─────────────────────────────────────────────────────────────
+
+// llama-swap stdout/stderr log (the launchd agent's Standard{Out,Error}Path);
+// shipped under service.name=llama-swap.
+otelcol.receiver.filelog "llama_swap" {
+	include           = [sys.env("HOME") + "/Library/Logs/ai-infra/llama-swap.log"]
+	start_at          = "end"
+	include_file_path = true
+	resource          = {
+		"service.name" = "llama-swap",
+	}
+
+	output {
+		logs = [otelcol.processor.transform.identity.input]
+	}
+}
+
+// llama-server stderr (via the stderr-tee wrapper, since llama-swap does not proxy
+// child stderr); shipped under service.name=llama-server. The wrapper tees to
+// ${TMPDIR}/ai-infra-llama-server.err.log (see llama-server-wrapper.sh).
+otelcol.receiver.filelog "llama_server" {
+	include           = [sys.env("TMPDIR") + "/ai-infra-llama-server.err.log"]
+	start_at          = "end"
+	include_file_path = true
+	resource          = {
+		"service.name" = "llama-server",
+	}
+
+	output {
+		logs = [otelcol.processor.transform.identity.input]
+	}
+}
+
+// ─── Processors ──────────────────────────────────────────────────────────────
+
+// Stamp host identity + the universal lab attributes (§13 identity taxonomy;
+// replaces the otelcol `resource` processor) and the host-origin `source` marker
+// (replaces `attributes/source`). host.name comes from Alloy's constants.hostname.
+otelcol.processor.transform "identity" {
+	error_mode = "ignore"
+
+	metric_statements {
+		context    = "resource"
+		statements = [
+			`set(attributes["host.name"], "` + constants.hostname + `")`,
+			`set(attributes["host.id"], "mac-local")`,
+			`set(attributes["deployment.environment"], "ai-infra-platform-local")`,
+		]
+	}
+
+	metric_statements {
+		context    = "datapoint"
+		statements = [
+			`set(attributes["source"], "mac-host")`,
+		]
+	}
+
+	log_statements {
+		context    = "resource"
+		statements = [
+			`set(attributes["host.name"], "` + constants.hostname + `")`,
+			`set(attributes["host.id"], "mac-local")`,
+			`set(attributes["deployment.environment"], "ai-infra-platform-local")`,
+		]
+	}
+
+	log_statements {
+		context    = "log"
+		statements = [
+			`set(attributes["source"], "mac-host")`,
+		]
+	}
+
+	output {
+		metrics = [otelcol.processor.batch.default.input]
+		logs    = [otelcol.processor.batch.default.input]
+	}
+}
+
+otelcol.processor.batch "default" {
+	send_batch_size = 1024
+	timeout         = "10s"
+
+	output {
+		metrics = [otelcol.exporter.otlphttp.cluster.input]
+		logs    = [otelcol.exporter.otlphttp.cluster.input]
+	}
+}
+
+// ─── Exporter ────────────────────────────────────────────────────────────────
+
+// OTLP/HTTP to the in-cluster Collector at the Cilium service VIP 192.168.105.203.
+// The exporter derives /v1/metrics and /v1/logs from the base endpoint. To fall back
+// to the non-HA `port-forward:otel` forward, swap the endpoint to http://127.0.0.1:34318.
+otelcol.exporter.otlphttp "cluster" {
+	client {
+		endpoint = "http://192.168.105.203:4318"
+
+		tls {
+			insecure = true
+		}
+	}
+}

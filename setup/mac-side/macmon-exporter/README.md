@@ -1,7 +1,8 @@
 # macmon exporter (`workstation_*` schema)
 
-Apple-Silicon hardware telemetry for the Mac-side OTel Collector, exposed as
-Prometheus text bound to loopback only (`127.0.0.1:39300`). See spec §8.4 / §9.1.
+Apple-Silicon hardware telemetry for the Mac-side host telemetry shipper (Grafana
+Alloy), exposed as Prometheus text bound to loopback only (`127.0.0.1:39300`). See
+spec §8.4 / §9.1.
 
 ## What this is
 
@@ -71,6 +72,6 @@ install -m 0644 ai-infra-macmon-exporter.py "$HOME/.local/bin/ai-infra-macmon-ex
 curl -fsS http://127.0.0.1:39300/metrics | grep workstation_sample_age_seconds
 ```
 
-The Mac-side OTel Collector scrapes this endpoint as job `macmon` at 5s
-(`setup/mac-side/otelcol-config.yaml`). It never scrapes any per-model
+Grafana Alloy scrapes this endpoint as job `macmon` at 5s
+(`setup/mac-side/alloy-config.alloy`). It never scrapes any per-model
 `/upstream/<model>/metrics` path.
