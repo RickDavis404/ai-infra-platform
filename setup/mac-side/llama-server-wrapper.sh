@@ -8,7 +8,7 @@
 # Purpose (POC lesson §8.4): llama-swap (the Go parent) does NOT proxy a child
 # llama-server's stderr — on a crash you see only the exit code, the actual error
 # text is lost. This wrapper `exec`s llama-server and tees its stderr to a known
-# log file, which the Mac-side OTel Collector's filelog receiver ships under
+# log file, which Grafana Alloy's otelcol.receiver.filelog ships under
 # service.name=llama-server. Using `exec` keeps the wrapper out of the process
 # tree so llama-swap's PID tracking still works. The wrapper also expands a leading
 # `~/` in the model-path arg, because llama-swap execs argv directly with no shell
@@ -21,7 +21,7 @@ if [[ ${#args[@]} -gt 0 ]]; then
   args[0]="${args[0]/#\~\//${HOME}/}"
 fi
 
-# Known stderr log file the host OTel Collector's filelog receiver tails. Kept in
+# Known stderr log file Grafana Alloy's filelog receiver tails. Kept in
 # $TMPDIR (falls back to /tmp) so it is outside any TCC-protected tree.
 err_log="${TMPDIR:-/tmp}/ai-infra-llama-server.err.log"
 

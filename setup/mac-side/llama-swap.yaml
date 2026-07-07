@@ -5,7 +5,7 @@
 # exactly one backend child at a time, swapping idle children out under the idle
 # TTL. GGUF entries route through the stderr-tee wrapper staged at
 # ~/.local/bin/ai-infra-llama-server-wrapper.sh (the Go parent does not proxy a
-# child's stderr; the wrapper tees it to a log the host OTel Collector ships).
+# child's stderr; the wrapper tees it to a log Grafana Alloy ships).
 # MLX entries spawn mlx_lm.server directly (no wrapper, no --metrics; MLX has no
 # metrics endpoint). Only the aggregate GET /metrics on the listen port is
 # scraped — NEVER the per-model /upstream/<model>/metrics path, which auto-loads

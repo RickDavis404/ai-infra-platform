@@ -9,17 +9,18 @@ lab is localhost + `kubectl port-forward` only. See spec §8.4 / §9.1 / §9.6 /
 ## Topology
 
 ```
-                          ┌──────────────────────── Apple-Silicon host ───────────────────────┐
-  in-cluster OTel  <───── │  Mac OTel Collector (otelcol-contrib)                              │
-  Collector              │    receivers: prometheus(llama-swap:38080, macmon:39300),           │
-  http://127.0.0.1:4318  │               hostmetrics, filelog(llama-swap + llama-server)     │
-  /v1/{traces,metrics,   │    exporters: otlphttp -> http://127.0.0.1:4318/v1/*              │
-        logs}            │                                                                   │
-                         │  llama-swap (127.0.0.1:38080, aggregate /metrics)                  │
-                         │    ├─ llama-server (GGUF) via stderr-tee wrapper, --metrics        │
-                         │    └─ mlx_lm.server (MLX), /v1 only, no /metrics                   │
-                         │  macmon exporter (127.0.0.1:39300, workstation_* + sample_age)      │
-                         └───────────────────────────────────────────────────────────────────┘
+                          ┌─────────────────────────────────────────────────────────────────────┐
+  in-cluster OTel  <──    │  Mac Grafana Alloy (alloy) — host telemetry shipper                 │
+  Collector (VIP)         │    metrics: prometheus.scrape(llama-swap:38080, macmon:39300)       │
+  http://192.168.105.203  │             + prometheus.exporter.unix (Darwin host metrics)        │
+  :4318  /v1/{metrics,    │    logs:    otelcol.receiver.filelog(llama-swap, llama-server)      │
+         logs}            │    export:  otelcol.exporter.otlphttp -> .203:4318/v1/*             │
+                          │                                                                     │
+                          │  llama-swap (127.0.0.1:38080, aggregate /metrics)                   │
+                          │    - llama-server (GGUF) via stderr-tee wrapper, --metrics          │
+                          │    - mlx_lm.server (MLX), /v1 only, no /metrics                     │
+                          │  macmon exporter (127.0.0.1:39300, workstation_* + sample_age)      │
+                          └─────────────────────────────────────────────────────────────────────┘
 ```
 
 A single `llama-swap` proxy fronts both backend server types and JIT-launches
@@ -34,7 +35,7 @@ metrics endpoint).
 |---|---|
 | `llama-swap.yaml` | llama-swap proxy config: `127.0.0.1:38080`, 10m TTL, model catalog. |
 | `llama-server-wrapper.sh` | stderr-tee wrapper for GGUF backends; staged to `~/.local/bin/`. |
-| `otelcol-config.yaml` | Mac OTel Collector config. |
+| `alloy-config.alloy` | Mac Grafana Alloy (host telemetry shipper) config, in River. |
 | `macmon-exporter/` | `workstation_*` Prometheus exporter + wrapper + README. |
 | `launchd/` | Representative launchd user agents + brew-services-vs-launchd notes. |
 
@@ -57,8 +58,8 @@ embeddings are explicitly enabled.
 llama-swap (a Go parent) does NOT proxy a child `llama-server`'s stderr — on a crash
 you see only the exit code (`[WARN] <model> ExitError >> exit status 1`); the actual
 error text is lost. `llama-server-wrapper.sh` `exec`s `llama-server` and tees its
-stderr to `${TMPDIR}/ai-infra-llama-server.err.log`, which the Mac OTel Collector's
-`filelog` receiver ships under `service.name=llama-server`. It also expands a leading
+stderr to `${TMPDIR}/ai-infra-llama-server.err.log`, which Grafana Alloy's
+`otelcol.receiver.filelog` ships under `service.name=llama-server`. It also expands a leading
 `~/` in the model-path arg (llama-swap execs argv directly with no shell expansion)
 and uses `exec` so it stays out of the process tree (llama-swap PID tracking still
 works).
@@ -68,19 +69,20 @@ works).
 macOS TCC (Sequoia and later) intercepts code-execution syscalls on files under
 `~/Documents`, causing a launchd-spawned interpreter to **silently hang** — no
 error, no log. Therefore every runnable host-service script (the llama-server
-wrapper, the macmon exporter, the `otelcol-contrib` binary) MUST be staged to
-`~/.local/bin/` (an unprotected path), and the launchd `ProgramArguments` reference
-that staged path — never a copy under `~/Documents`. `scripts/host/up.sh` performs
-the staging. The macmon exporter agent additionally puts `/usr/sbin` on `PATH` and
+wrapper, the macmon exporter) MUST be staged to `~/.local/bin/` (an unprotected
+path), and the launchd `ProgramArguments` reference that staged path — never a copy
+under `~/Documents`. `scripts/host/up.sh` performs the staging. (Grafana Alloy is
+Homebrew-managed at `/opt/homebrew/bin/alloy`, already outside any TCC-protected
+tree, so its binary needs no staging.) The macmon exporter agent additionally puts `/usr/sbin` on `PATH` and
 uses the explicit `/opt/homebrew/bin/python3` interpreter (the `env python3` shim can
 resolve to the Command Line Tools stub under launchd).
 
 ## Do NOT scrape per-model `/metrics`
 
 Hitting a per-model endpoint through llama-swap's `/upstream/<model>/...` path
-AUTO-LOADS the model (spawns a fresh `llama-server`) on every scrape. The Mac OTel
-Collector scrapes ONLY the aggregate `127.0.0.1:38080/metrics` (job `llama-swap`) and
-the macmon exporter `127.0.0.1:39300/metrics` (job `macmon`). Never add upstream
+AUTO-LOADS the model (spawns a fresh `llama-server`) on every scrape. Grafana Alloy
+scrapes ONLY the aggregate `127.0.0.1:38080/metrics` (job `llama-swap`) and the
+macmon exporter `127.0.0.1:39300/metrics` (job `macmon`). Never add upstream
 per-model targets — `scripts/smoke/host.sh` asserts none are configured.
 
 ## No inline comments inside `cmd:` blocks

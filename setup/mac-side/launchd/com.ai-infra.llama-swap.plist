@@ -8,8 +8,11 @@
   `launchctl bootstrap gui/$(id -u) <plist>`.
 
   llama-swap binds 127.0.0.1:38080 only (config enforces the bind). The binary is
-  the Homebrew-installed llama-swap; the config and the staged wrapper live outside
-  any TCC-protected tree.
+  now mise-managed (github backend), so `__LLAMA_SWAP_BIN__` is a placeholder that
+  scripts/host/up.sh substitutes at install time with the resolved absolute path
+  (`mise which llama-swap`); launchd has no mise on PATH, so the plist must hold the
+  real path, not a shim. The config and the staged wrapper live outside any
+  TCC-protected tree.
 -->
 <plist version="1.0">
   <dict>
@@ -18,7 +21,7 @@
 
     <key>ProgramArguments</key>
     <array>
-      <string>/opt/homebrew/bin/llama-swap</string>
+      <string>__LLAMA_SWAP_BIN__</string>
       <string>--listen</string>
       <string>127.0.0.1:38080</string>
       <string>--config</string>
