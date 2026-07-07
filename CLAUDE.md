@@ -31,6 +31,28 @@ To test subscription-model routing **through the LiteLLM gateway**
 LiteLLM — so "it works" proves only the direct path, not the passthrough. Confirm via a Langfuse
 trace or `/status` showing base URL `192.168.105.200:4000`.
 
+## Agent auth on a fresh Mac (install + login)
+
+The repo does **not** install or authenticate the `claude` / `codex` CLIs — they live on the base
+login PATH and auth **out-of-band per machine, subscription OAuth only (never an API key)**. Install
+mise-independently (do **not** `npm -g` — it entangles the mise-pinned node): Codex via
+`brew install --cask codex`; Claude Code via `curl -fsSL https://claude.ai/install.sh | bash`
+(native arm64 → `~/.local/bin`, which must be on PATH). **Log in from OUTSIDE the repo** — mise
+activation makes `cd` into the repo inject the gateway env + `CODEX_HOME`, so never log in via
+`mise exec` / `mise run`:
+
+- **Codex:** `codex login` → ChatGPT OAuth → the **file** `~/.codex/auth.json` (works over headless
+  ssh). **THEN** `mise run init` to wire the repo `CODEX_HOME` symlink — must be **after**
+  `codex login` or init silently skips it.
+- **Claude:** `/login` → Anthropic Max/Pro OAuth in the **macOS login keychain**. **CRITICAL —
+  attended GUI Terminal only, NOT headless ssh:** the keychain must be unlocked in that GUI security
+  session, and macOS shows a per-app **keychain ACL prompt** ("claude wants to use confidential
+  information…") that must be clicked (**Always Allow** to suppress it). Over ssh there is no GUI to
+  approve it, so `claude` returns `Not logged in`. Keychain OAuth is **not portable** between
+  machines — re-login per box. Codex (file-based) is unaffected.
+
+Full install / auth / verify steps + troubleshooting: [`docs/agent-auth.md`](docs/agent-auth.md).
+
 ## Delegation default — "ultracode" means USE Workflow + subagents
 
 When the user invokes **ultracode**, or asks to use a workflow / subagents / "delegate" /
@@ -44,3 +66,22 @@ instruction. Brief every subagent with full context (never let them investigate 
 `claude-code` virtual key. If that key's budget is exhausted they 429 — so raise the budget first
 via the **master-key in-cluster mint Jobs** (`kubernetes/litellm/keys/*.yaml` — budgets are
 declarative there; the master key has no budget), then resume delegation.
+
+## Autonomous fix escalation + commit/PR discipline (goal-driven / hands-off runs)
+
+When driving toward a goal or an explicitly hands-off / autonomous run, do **NOT** stop at the
+first non-trivial or unclear fix — escalate in-band, **per issue**:
+
+1. The working subagent attempts the fix — **up to 2 attempts**.
+2. If still unresolved, spawn a **Fable-model subagent** (Agent tool, `model: fable`) to **review**
+   the failure and **recommend** a fix aligned with this project's overall goals/intent (root-cause
+   diagnosis + recommended approach, not just a patch).
+3. Then spawn a **Fable-model subagent given ONE attempt** to troubleshoot and **directly
+   implement** that recommended fix, then verify it.
+4. **Only if that final Fable attempt also fails** do you stop and surface it — with the full
+   diagnosis, what was tried, and the remaining options.
+
+**Commit/PR discipline:** the moment a fix is verified working, **commit + push** it with a clear,
+verbose message (symptom → root cause → resolution). When the run's objective is fully met, write a
+**detailed PR description** capturing all required changes — do **NOT** merge (human review). This
+policy is Claude-specific (Fable subagents); `AGENTS.md` is intentionally not mirrored for it.

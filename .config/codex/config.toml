@@ -1,0 +1,30 @@
+# .config/codex/config.toml — repo-local $CODEX_HOME USER-layer Codex config.
+#
+# mise exports CODEX_HOME="{{config_root}}/.config/codex" on `cd` (conf.d/10-env.toml),
+# so a BARE `codex` (run from the repo with mise env active) reads THIS file as its
+# user config instead of ~/.codex/config.toml. Codex only honors provider keys
+# (`model_provider`, `model_providers`, `base_url`, wire_api, ...) in the user-layer
+# config; it HARD-IGNORES them in the project-layer .codex/config.toml as a security
+# boundary. That project file therefore keeps only sandbox/approval/MCP settings, and
+# the gateway provider wiring lives HERE.
+#
+# No secret is committed: the LiteLLM virtual key arrives at runtime via the
+# CODEX_LITELLM_AUTH_HEADER env var (composed as `Bearer <key>` in secret-env.sh from
+# fnox), referenced below through env_http_headers — mirroring how the project file's
+# langfuse MCP block uses env_http_headers = { Authorization = "LANGFUSE_MCP_AUTH_HEADER" }.
+model = "gpt-5.5"
+model_provider = "litellm_local"
+
+[model_providers.litellm_local]
+name = "LiteLLM Local"
+base_url = "http://192.168.105.200:4000/v1"
+requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+stream_idle_timeout_ms = 900000
+env_http_headers = { "X-Litellm-Api-Key" = "CODEX_LITELLM_AUTH_HEADER" }
+
+# model_catalog_json: pinning the bundled catalog here is a live-test open question
+# (whether bare codex needs it to resolve gpt-5.5 through the gateway). Left commented
+# until verified on the mini; the pinned file ships alongside this config:
+# model_catalog_json = "model-catalog-codex-defaults-0.142.5.json"
