@@ -16,7 +16,7 @@ Use the narrowest layer that fits the change:
 | Secrets (ciphertext) | `fnox.local.toml` (repo root) | fnox + age ciphertext; merged over the template | No |
 | Plaintext input | `secrets/shared.env` | Temporary sealing input | No |
 | Runtime kubeconfig | `.local/kube/config` | Host kubeconfig written by Lima tasks | No |
-| Host service config | `setup/mac-side/*` | launchd, llama-swap, OTel collector | Yes |
+| Host service config | `setup/mac-side/*` | launchd, llama-swap, Grafana Alloy | Yes |
 
 Do not put secret values in mise env files, manifests, docs, or task logs. Secret values
 belong in fnox + age and are materialized at runtime.

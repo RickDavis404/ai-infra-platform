@@ -28,9 +28,8 @@ The two tools own different surfaces and do not overlap:
 
 - **Homebrew** manages **host services** — the long-running Mac-side processes:
   llama-swap (fronting `llama-server` and `mlx_lm.server`), macmon (+ exporter),
-  and the Mac-side OTel Collector (`otelcol-contrib`, run via a launchd user agent
-  because there is no Homebrew formula — its binary is installed manually to the
-  user-local bin directory). Lifecycle is `brew services` (wrapped by mise tasks).
+  and Mac-side Grafana Alloy (the `grafana-alloy` formula, binary `alloy`, run via a
+  launchd user agent). Lifecycle is `brew services` (wrapped by mise tasks).
 - **mise** manages the **repo command surface** — the pinned toolchain and
   non-secret environment in `.config/mise/conf.d/*.toml`, plus every operational
   task as a checked-in **file-task** under `.config/mise/tasks/<group>/<name>.sh`.
@@ -141,7 +140,7 @@ policy in `common.sh`.
 | Task | Does |
 |---|---|
 | `mise trust` / `mise install` | trust the config (one-time per machine), install the pinned `[tools]` toolchain |
-| `init` | **interactive host init**: prereqs (bash4, brew bundle, mise install/trust), node + mmdc + Chrome, socket_vmnet secure path + `limactl sudoers`, optional `dhcpEnd` edit, age keygen, seal secrets, confirm VIP/pool — then points at `mise run up` |
+| `init` | **interactive host init**: prereqs (bash4, brew bundle, mise install/trust), node + mmdc + Chrome, socket_vmnet secure path + `networks.yaml` socketVMNet fixup + `limactl sudoers`, age keygen, seal secrets, confirm VIP/pool — then points at `mise run up` |
 | `setup` | non-interactive bootstrap aggregator: `prereq:check` -> `bootstrap` (brew bundle + `mise install`) -> `precommit:install` |
 | `bootstrap` | one-shot host bootstrap (Homebrew, `brew bundle`, `mise install`, hooks) |
 | `prereq:check` | verify host prerequisites (macOS/Apple Silicon, bash 4+, Lima) |
@@ -239,12 +238,12 @@ expanded steps, all via mise tasks (full demo in
 
 1. **Initialize the host.** `mise run init` — interactive: prereqs (bash4, brew
    bundle, `mise install`/trust), node + mmdc + Chrome (`tools:mmdc-setup`),
-   socket_vmnet secure path + `limactl sudoers`, optional `dhcpEnd` edit, age
-   keygen, seal/sync secrets, confirm the VIP (`192.168.105.40`) and LB pool
+   socket_vmnet secure path + `networks.yaml` socketVMNet fixup + `limactl sudoers`,
+   age keygen, seal/sync secrets, confirm the VIP (`192.168.105.40`) and LB pool
    (`192.168.105.200-.250`). (For the non-interactive subset use `mise run setup`,
    then drive secrets manually.)
 2. **Bring up the whole lab.** `mise run up` chains: `host:up` (llama-swap +
-   macmon + Mac OTel Collector; confirm the chat-model path resolves via
+   macmon + Grafana Alloy; confirm the chat-model path resolves via
    `AI_INFRA_DEFAULT_CHAT_MODEL_PATH` — no hardcoded absolute path) -> `lima:start`
    (3-VM kubeadm: `ai-inf-platform-0` init, then `-1`/`-2` join via the VIP) ->
    `lima:kubeconfig` -> `k8s:cilium` (install Cilium, nodes flip to Ready) ->
@@ -257,6 +256,18 @@ expanded steps, all via mise tasks (full demo in
    `192.168.105.200:4000`, Langfuse `192.168.105.201:3000`, Grafana
    `192.168.105.202:3000`, OTLP `192.168.105.203:4318`, Hubble `192.168.105.204`.
    The `port-forward:*` tasks bind `127.0.0.1` as a non-HA fallback. All require credentials.
+
+> **macOS 26 — a hands-off `mise run up` must keep its launching terminal/ssh
+> session alive for the whole run.** macOS Local Network privacy denies *detached*
+> third-party processes (including the mise-managed `kubectl`) access to the
+> socket_vmnet subnet: every kubectl dial of the API VIP fails instantly with
+> `no route to host`, while Apple's exempt `/usr/bin/curl` still reaches the same
+> URL. `lima:start` now fails fast at a kubectl-vs-curl preflight with exactly this
+> diagnosis. Never `nohup`/detach the run **on the Mac** (no `nohup`, no
+> launchd/orphaned run, no fire-and-forget ssh). Driving it over ssh is fine as long
+> as the ssh session stays open for the entire run — if you must background it,
+> background the ssh on the **client** side (keep the client process alive) rather
+> than nohup-ing the command on the Mac.
 
 Then `mise run smoke` runs the component smoke suite end-to-end; the whole-lab
 aggregators are `mise run up` / `mise run down`.
@@ -274,6 +285,11 @@ and the Codex launch-time `--config` overrides. Full model, inventory, and hard
 rules are in [`secrets.md`](secrets.md).
 
 ## 6. Agent-configuration workflows
+
+This section covers the passthrough **configuration** baked into the repo. The
+one-time, per-machine steps to **install and OAuth-log-in** the `codex` / `claude`
+CLIs on a fresh Mac (and the attended-GUI keychain gotcha for Claude) live in
+[`agent-auth.md`](agent-auth.md).
 
 ### 6.1 Claude Code Max passthrough
 
@@ -312,7 +328,9 @@ root `AGENTS.md`; the `mise run codex:launch` task injects the ignored keys via
 `CODEX_HOME`**. Codex routes through the LiteLLM gateway and uses the native
 `chatgpt/` device-flow provider for subscription passthrough; it mirrors the
 full-capture posture with `log_user_prompt = true` and the OTLP endpoints in its
-config.
+config. Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse VIP;
+the launcher derives the required Basic auth header from the existing Langfuse
+project API key pair and passes only the env-var reference through Codex config.
 
 ```mermaid
 flowchart LR
@@ -353,7 +371,7 @@ are load-bearing:
 - **Keep service paths out of protected `Documents`.** Host-service working paths
   must live outside macOS-protected directories (the TCC-guarded `Documents`
   folder) to avoid permission prompts; the user-local bin directory is the home for
-  manually-installed binaries (e.g. `otelcol-contrib`).
+  the staged host-service scripts (the llama-server wrapper, the macmon exporter).
 - **No inline comments in llama-swap command blocks** — they break the command
   parsing.
 - **MLX models expose no `/metrics`** — only the llama-swap aggregate and macmon
@@ -420,6 +438,7 @@ and the reliability behavior.
 ## Related docs
 
 - [`README.md`](../README.md) — quickstart and the top-level command list.
+- [`agent-auth.md`](agent-auth.md) — per-machine `codex` / `claude` install + subscription OAuth login + routing verification.
 - [`secrets.md`](secrets.md) — the fnox+age secrets workflow in full.
 - [`chart-selection.md`](chart-selection.md) — chart provenance and pins.
 - [`dependency-updates.md`](dependency-updates.md) — pin surfaces, Renovate + kubeconform CI, mise.lock.

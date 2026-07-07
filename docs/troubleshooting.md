@@ -13,13 +13,22 @@ relevant mise task and deeper doc. See also [`developer-workflows.md`](developer
 - **Symptom.** `mise run lima:start` (or `limactl start`) errors on the `shared`
   network; the VM never gets a `lima0` IP on `192.168.105.0/24`.
 - **Cause.** The Lima `shared` (socket_vmnet) network requires a root-owned
-  `socket_vmnet` binary **and** a generated sudoers drop-in; `/etc/sudoers.d/lima`
-  is missing.
-- **Fix.** Run `mise run init` (it installs the prerequisite), or do it manually:
-  confirm `/opt/socket_vmnet/bin/socket_vmnet` is root-owned, then
-  `limactl sudoers | sudo tee /etc/sudoers.d/lima` and verify with
-  `limactl sudoers --check`. The Homebrew socket_vmnet path is flagged "not
-  secure" since v1.0.0 — only the root-owned `/opt/socket_vmnet` path is accepted.
+  `socket_vmnet` binary **and** a generated sudoers drop-in. Two things trip a fresh
+  Mac: (1) Homebrew installs `socket_vmnet` under `/opt/homebrew`, but Lima only
+  accepts a root-owned copy at `/opt/socket_vmnet/bin/socket_vmnet`; (2) Lima
+  auto-generates `~/.lima/_config/networks.yaml` with `.paths.socketVMNet` pointing at
+  the uid-owned Homebrew **Cellar** path, which it then rejects ("not owned by root") —
+  so `lima:start` dies and `limactl sudoers` writes an **empty** `/etc/sudoers.d/lima`.
+- **Fix.** Run `mise run init` — it prints the `sudo` commands to copy `socket_vmnet`
+  into `/opt/socket_vmnet/bin` (root:wheel, 0755), and it sets `.paths.socketVMNet` in
+  `networks.yaml` to that `/opt` path **before** the sudoers step. To do it manually:
+  copy the binary (`sudo cp "$(brew --prefix socket_vmnet)/bin/socket_vmnet"
+  /opt/socket_vmnet/bin/...` + `chown root:wheel` + `chmod 755`), set
+  `yq -i '.paths.socketVMNet = "/opt/socket_vmnet/bin/socket_vmnet"'
+  ~/.lima/_config/networks.yaml`, then `limactl sudoers | sudo tee
+  /etc/sudoers.d/lima` and verify with `limactl sudoers --check`. The Homebrew
+  socket_vmnet path is flagged "not secure" since v1.0.0 — only the root-owned
+  `/opt/socket_vmnet` path is accepted.
 
 ### `mmdc` / `validate:mermaid` fails: "Could not find Chrome"
 
@@ -313,9 +322,9 @@ relevant mise task and deeper doc. See also [`developer-workflows.md`](developer
 - **Symptom.** A host service prompts for access to protected directories.
 - **Cause.** A service working path lives inside a macOS-protected (TCC-guarded)
   directory.
-- **Fix.** Keep host-service paths out of protected directories; install
-  manually-downloaded binaries (e.g. `otelcol-contrib`) to the user-local bin
-  directory.
+- **Fix.** Keep host-service paths out of protected directories; stage runnable
+  host-service scripts (the llama-server wrapper, the macmon exporter) to the
+  user-local bin directory.
 
 ## Related docs
 

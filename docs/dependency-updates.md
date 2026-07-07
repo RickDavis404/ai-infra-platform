@@ -97,30 +97,20 @@ Action pins are committed as version tags; Renovate rewrites them to commit SHAs
 first run. The exact `KUBECONFORM_VERSION` and action tags should be sanity-checked on
 the first CI run and then left to Renovate.
 
-## 5. mise lockfile (`mise.lock`) — status and how to enable
+## 5. mise lockfile (`mise.lock`)
 
-mise **2026.6.13** supports a lockfile (`mise lock`; the lockfile lands at
-`.config/mise/mise.lock`, next to `conf.d/`). It is **not enabled yet**, and a lockfile
-is intentionally **not** committed in this change, for one concrete reason:
+mise **2026.6.13** supports a lockfile, and it is **enabled**: `lockfile = true` in the
+root `mise.toml` `[settings]` block, with `mise.lock` committed at the repo root (next
+to `mise.toml`). The lockfile pins every `[tools]` entry across platforms; mise
+maintains it automatically on `mise install`, and you can regenerate it explicitly
+after changing a pin with `mise lock`.
 
-- `mise lock` resolves **every** `[tools]` entry, including
-  `ubi:open-telemetry/opentelemetry-collector-releases`. The `ubi` backend is
-  **deprecated** (mise warns: migrate to the `github:` backend before 2027.1.0) and its
-  resolution currently fails on transient GitHub API `504`s. A lockfile generated now
-  would be partial or non-reproducible — which violates "pin nothing you can't verify."
-
-**To enable it (host step, once the `ubi` entry is migrated):**
-
-1. Migrate `ubi:open-telemetry/opentelemetry-collector-releases` → `github:` in
-   `00-tools.toml` (per mise's deprecation warning), or temporarily drop it, so all
-   tools resolve.
-2. Turn on the lockfile: add `lockfile = true` under a `[settings]` block in a
-   `conf.d/*.toml` fragment (or `mise settings set lockfile true`).
-3. Generate + commit: `mise lock` (or a plain `mise install`) writes
-   `.config/mise/mise.lock`; commit it. From then on mise maintains it on install.
-
-Until then, **`.config/mise/conf.d/00-tools.toml` is the authoritative toolchain pin
-source** and Renovate keeps it current.
+The former host-telemetry pin (`open-telemetry/opentelemetry-collector-releases`,
+briefly on the deprecated `ubi` backend and then the `github:` backend) has been
+**removed**. Mac-side host telemetry now runs on **Grafana Alloy**, installed from the
+`grafana-alloy` Homebrew formula (see `Brewfile`), so it is no longer a mise `[tools]`
+pin — which also removes the transient GitHub-API resolution failures that previously
+blocked a reproducible lock.
 
 ## 6. Renovate vs Dependabot — recommendation
 

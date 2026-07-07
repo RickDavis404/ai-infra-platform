@@ -52,7 +52,7 @@ flowchart TB
     subgraph MAC["Mac host domain (host plane)"]
         LS["llama-swap :38080<br/>-> llama-server + mlx_lm.server"]
         MM["macmon (+exporter :39300)"]
-        MOC["Mac OTel Collector<br/>(otelcol-contrib, launchd)"]
+        MOC["Mac Grafana Alloy<br/>(alloy, launchd)"]
         AG["Agent clients<br/>(codex, claude-code)"]
     end
     subgraph VM["Lima VM domain (3x ai-inf-platform, control / cluster plane)"]
@@ -104,11 +104,11 @@ matrix and chart pins in [`chart-selection.md`](chart-selection.md).
 
 | Component | Role | Where | Deployed by |
 |---|---|---|---|
-| llama-swap | On-demand model front (`:38080`) routing to backends | Mac host | Homebrew / `brew services` |
+| llama-swap | On-demand model front (`:38080`) routing to backends | Mac host | mise (github backend) + launchd user agent |
 | llama-server (`llama.cpp`) | GGUF model serving backend | Mac host | Homebrew, fronted by llama-swap |
 | `mlx_lm.server` (`mlx-lm`) | Apple-Silicon MLX model backend | Mac host | Homebrew, fronted by llama-swap |
 | macmon (+ exporter) | Apple-Silicon hardware metrics (`:39300`) | Mac host | Homebrew |
-| Mac OTel Collector | Host telemetry OTLP shipper (`otelcol-contrib`) | Mac host | manual binary + launchd user agent |
+| Mac Grafana Alloy | Host telemetry OTLP shipper (`alloy`) | Mac host | Homebrew (`grafana-alloy`) + launchd user agent |
 
 The host plane is managed by Homebrew (services) and mise (the repo command
 surface); see [`developer-workflows.md`](developer-workflows.md).
@@ -340,7 +340,7 @@ flowchart LR
         N1["Native CLI OTLP<br/>(codex / claude-code)"]
         N2["Langfuse hook / plugin"]
         N3["LiteLLM gateway callbacks"]
-        N4["Mac OTel Collector<br/>(llama-swap, macmon, hostmetrics)"]
+        N4["Mac Grafana Alloy<br/>(llama-swap, macmon, host metrics)"]
     end
     OC["in-cluster OTel Collector (DaemonSet)<br/>OTLP :4318 /v1/*, GenAI OTTL transform, 64 MiB"]
     LF["Langfuse :3000"]
@@ -373,9 +373,9 @@ flowchart LR
 
 The telemetry path (spec §13):
 
-- App SDKs and the Mac-side OTel Collector send OTLP to the **in-cluster OTel
+- App SDKs and Mac-side Grafana Alloy send OTLP to the **in-cluster OTel
   Collector OTLP gateway** at `:4318` on the standard `/v1/{traces,metrics,logs}`
-  paths (no `/otel` prefix; the Mac collector reaches it directly at the service
+  paths (no `/otel` prefix; the Mac agent reaches it directly at the service
   VIP `http://192.168.105.203:4318/v1/*`, or `http://127.0.0.1:34318/v1/*` via the
   `port-forward:otel` fallback).
 - The gateway fans out: all traces to Tempo; `service.name==claude-code` spans

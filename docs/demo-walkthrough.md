@@ -59,7 +59,7 @@ mise run up   # host:up -> lima:start -> lima:kubeconfig -> k8s:cilium -> k8s:ap
 `mise run up` chains the bring-up; the load-bearing observations:
 
 - **Host services** (`host:up`): `mise run host:status` shows llama-swap +
-  llama-server + `mlx_lm.server`, macmon, and the Mac OTel Collector running; the
+  llama-server + `mlx_lm.server`, macmon, and Grafana Alloy running; the
   default chat-model path resolves via `AI_INFRA_DEFAULT_CHAT_MODEL_PATH`.
 - **Cluster** (`lima:start`): the 3 Lima VMs come up on the `shared` L2;
   `ai-inf-platform-0` runs `kubeadm init`, then `ai-inf-platform-1`/`-2` `kubeadm join

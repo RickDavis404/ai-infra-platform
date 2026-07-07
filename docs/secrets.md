@@ -267,7 +267,8 @@ Supplying the age identity to fnox at runtime, in order of preference:
 
 The committed `.claude/settings.json` and `./.codex/config.toml` carry **only
 non-secret** values (model placeholders, reasoning effort, approval/sandbox policy,
-localhost MCP server definitions). The **secret references** — virtual keys, base URLs
-bound to keys — live in the generated, gitignored `.claude/settings.local.json` (and
-the Codex launch-time `--config` overrides), which are produced from the fnox set and
-never committed. See §11 and §2.4 of the spec for the full precedence rules.
+MCP endpoints, and env-var header references). The **secret references** — virtual
+keys, base URLs bound to keys, and derived auth headers — live in the generated,
+gitignored `.claude/settings.local.json` or process env from mise / Codex launch-time
+`--config` overrides. They are produced from the fnox set and never committed. See
+§11 and §2.4 of the spec for the full precedence rules.
