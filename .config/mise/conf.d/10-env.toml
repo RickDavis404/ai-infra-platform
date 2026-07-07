@@ -6,6 +6,7 @@
 [env]
 KUBECONFIG    = "{{config_root}}/.local/kube/config" # repo-local kubeconfig (copyToHost target, under .local)
 LIMA_INSTANCE = "ai-inf-platform"                             # Lima instance base name (kubeadm pivot, D005)
+CODEX_HOME    = "{{config_root}}/.config/codex"      # repo-local Codex home: provider-wired user config so bare `codex` routes through the gateway
 
 # Localhost-only port-forward defaults (UIs require creds; no anon access).
 LITELLM_PORT   = "34000"
