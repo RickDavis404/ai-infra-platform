@@ -1,0 +1,74 @@
+# mise.toml — root project config for the ai-infra-platform repo.
+#
+# mise loads this root mise.toml (highest precedence) then .config/mise/conf.d/*.toml
+# in lexical order. This file owns the pinned [tools] toolchain and the [settings]
+# block; [env] lives in conf.d/10-env.toml and task config in conf.d/90-tasks.toml.
+#
+# Host-service binaries (lima, llama.cpp, mlx-lm, macmon, and the grafana-alloy host
+# telemetry shipper) are Homebrew-managed, NOT mise-managed — see Brewfile (§8.3).
+# EXCEPTION: llama-swap is mise-managed via the github backend below (its Homebrew
+# tap refused to load on a fresh `brew bundle`).
+
+[settings]
+lockfile = true
+
+[tools]
+# --- Secrets toolchain ---
+age  = "1.3.1"     # age encryption (fnox backend) — current stable (verified in mise registry)
+fnox = "1.28.0"    # fnox secret resolver — current stable (the prior 0.5.0 pin did not exist)
+
+# --- Kubernetes client tooling ---
+kubectl      = "1.36.2"
+kustomize    = "5.8.1"
+helm         = "4.2.2"
+"cilium-cli" = "0.19.5"
+
+# --- Lint / format / scan (also surfaced via pre-commit, §8.2/§8.3) ---
+shellcheck = "0.11.0"
+shfmt      = "3.13.1"
+# uv — the Python package installer mise's `pipx:` backend shells out to; REQUIRED by
+# pipx:yamllint below. A bare box (fresh macOS + Homebrew only) has NEITHER pipx nor
+# uv, and mise materializes [tools] — the implicit `mise install` — BEFORE `mise run
+# init` ever reaches its `brew bundle` step, so the installer must be a mise-managed
+# tool, not a Homebrew one, or `mise install` aborts hard ("pipx install yamllint...:
+# No such file or directory"). uv is a single static binary (no Python needed for uv
+# itself) and is mise's own recommended remedy for the missing-pipx case.
+uv = "0.11.26"
+# yamllint via the pipx backend (installed by uv, above): it lands yamllint in its own
+# venv WITH its pyyaml dependency, so both the `yamllint` CLI AND validate:yaml's
+# structural PyYAML parse have `yaml` available (mise's default backend pulled the
+# wheel but left the venv's interpreter off any general PATH → "No module named
+# 'yaml'"). validate:yaml resolves that venv interpreter defensively (shebang first
+# token, else the python beside the resolved entry-point) since uv/pipx launcher
+# shebangs vary by version (newer uv writes a `#!/bin/sh` polyglot wrapper).
+"pipx:yamllint" = "1.38.0"
+gitleaks   = "8.30.1"
+pre-commit = "4.6.0"
+
+# --- Utilities ---
+jq = "1.8.2"
+# yq — Homebrew-managed (Brewfile), NOT a mise tool. It is the one CLI exception to the
+# "entire toolchain is mise-managed" rule: mise's aqua backend resolves the wrong-arch asset
+# (yq_darwin_amd64 → "Bad CPU type" on Apple Silicon) and the github backend installs it under
+# its asset filename (yq_darwin_arm64) instead of a bare `yq`, while Homebrew ships a native-arch
+# yq that lands as `yq`. yq is only needed AFTER `brew bundle` (init.sh networks.yaml patch + the
+# `up` tasks), never during `mise install`, so brew is the correct home. See Brewfile.
+
+# --- Diagram + docs toolchain (mermaid-cli / design-doc-mermaid skill) ---
+node    = "24"          # mermaid-cli engine (^18.19 || >=20); current LTS Krypton
+python  = "3.13"        # design-doc-mermaid skill utilities (stdlib only)
+ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bitnami
+# mmdc on PATH via the npm backend. NOTE: `mise install` does NOT fetch the headless
+# Chrome mermaid-cli needs (puppeteer is a peer dep + npm --ignore-scripts), so a
+# one-time `mise run tools:mmdc-setup` is still required. See that task.
+"npm:@mermaid-js/mermaid-cli" = "11.16.0"
+
+# --- Host model-serving proxy (github backend) ---
+# llama-swap — the on-demand model front (:38080) that JIT-launches llama-server /
+# mlx_lm.server. Formerly a Homebrew formula, but its custom tap aborted a fresh
+# `brew bundle` ("Refusing to load formula ... from untrusted tap"), so it is pulled
+# straight from the GitHub release instead. The release ships a darwin/arm64 asset
+# (llama-swap_<ver>_darwin_arm64.tar.gz); mise's github backend strips the `v` from
+# the release tag, so "235" resolves the v235 tag. host:up bakes the resolved binary
+# path into the launchd plist (mise shims are not on launchd's PATH).
+"github:mostlygeek/llama-swap" = "235"

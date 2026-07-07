@@ -18,10 +18,25 @@
 
 _repo="${MISE_PROJECT_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
+# fnox is mise-managed (mise.toml [tools]) and is NOT on PATH yet when mise evaluates
+# this file via [env]._.source — mise prepends its tool-shim dir to PATH only AFTER
+# running the _.source hook (confirmed: `command -v fnox` fails here even in an
+# interactive mise-activated login shell, and under `mise exec`). The old
+# `command -v fnox` guard therefore silently skipped EVERY secret, so
+# ANTHROPIC_CUSTOM_HEADERS / the Codex auth header ended up UNSET and a bare agent hit
+# LiteLLM with no virtual key. Resolve the binary explicitly: PATH first, else the
+# mise install dir (version-agnostic; the [ -x ] test also no-ops an unmatched glob).
+_fnox_bin="$(command -v fnox 2>/dev/null || true)"
+if [ -z "$_fnox_bin" ]; then
+  for _d in "${MISE_DATA_DIR:-$HOME/.local/share/mise}"/installs/fnox/*/fnox; do
+    [ -x "$_d" ] && _fnox_bin="$_d" && break
+  done
+fi
+
 # _fx <KEY> — print one fnox-decrypted value (empty on any failure; never throws).
 _fx() {
-  command -v fnox >/dev/null 2>&1 || return 0
-  (cd "$_repo" && FNOX_AGE_KEY_FILE="$_repo/secrets/age/key.txt" fnox get "$1" 2>/dev/null) </dev/null || true
+  [ -n "$_fnox_bin" ] || return 0
+  (cd "$_repo" && FNOX_AGE_KEY_FILE="$_repo/secrets/age/key.txt" "$_fnox_bin" get "$1" 2>/dev/null) </dev/null || true
 }
 
 # _exp <NAME> <VALUE> — export NAME=VALUE only when VALUE is non-empty; else warn+skip.
@@ -37,15 +52,28 @@ _exp() {
 _vk=$(_fx CLAUDE_CODE_LITELLM_VIRTUAL_KEY)
 _exp ANTHROPIC_CUSTOM_HEADERS "${_vk:+x-litellm-api-key: Bearer $_vk}"
 
-# Codex proxy-hop virtual key (passed straight through).
-_exp CODEX_LITELLM_VIRTUAL_KEY "$(_fx CODEX_LITELLM_VIRTUAL_KEY)"
+# Codex proxy-hop virtual key: export the raw key (still passed straight through)
+# AND a composed `Bearer <key>` header value. The repo-local $CODEX_HOME user-layer
+# config (.config/codex/config.toml) references CODEX_LITELLM_AUTH_HEADER via
+# env_http_headers, so a bare `codex` routes through the gateway with no secret
+# committed to the file (mirrors LANGFUSE_MCP_AUTH_HEADER below).
+_codex_vk=$(_fx CODEX_LITELLM_VIRTUAL_KEY)
+_exp CODEX_LITELLM_VIRTUAL_KEY "$_codex_vk"
+_exp CODEX_LITELLM_AUTH_HEADER "${_codex_vk:+Bearer $_codex_vk}"
 
 # Grafana MCP password (NAME-MAP: fnox key is GRAFANA_ADMIN_PASSWORD).
 _exp GRAFANA_PASSWORD "$(_fx GRAFANA_ADMIN_PASSWORD)"
 
-# Langfuse MCP API key pair.
-_exp LANGFUSE_PUBLIC_KEY "$(_fx LANGFUSE_PUBLIC_KEY)"
-_exp LANGFUSE_SECRET_KEY "$(_fx LANGFUSE_SECRET_KEY)"
+# Langfuse API key pair plus native MCP Basic-auth header.
+_lf_public=$(_fx LANGFUSE_PUBLIC_KEY)
+_lf_secret=$(_fx LANGFUSE_SECRET_KEY)
+_exp LANGFUSE_PUBLIC_KEY "$_lf_public"
+_exp LANGFUSE_SECRET_KEY "$_lf_secret"
+_lf_mcp_auth=""
+if [ -n "$_lf_public" ] && [ -n "$_lf_secret" ]; then
+  _lf_mcp_auth="Basic $(printf '%s:%s' "$_lf_public" "$_lf_secret" | base64 | tr -d '\n')"
+fi
+_exp LANGFUSE_MCP_AUTH_HEADER "$_lf_mcp_auth"
 
 # ClickHouse MCP password.
 _exp CLICKHOUSE_PASSWORD "$(_fx CLICKHOUSE_PASSWORD)"
@@ -57,4 +85,4 @@ _llpg=$(_fx LITELLM_PG_PASSWORD)
 _exp LITELLM_PG_MCP_URI "${_llpg:+postgresql://litellm:$_llpg@${AI_INFRA_LITELLM_PG_VIP:-192.168.105.206}:5432/litellm}"
 
 unset -f _fx _exp
-unset _repo _vk _lfpg _llpg
+unset _repo _fnox_bin _d _vk _codex_vk _lf_public _lf_secret _lf_mcp_auth _lfpg _llpg

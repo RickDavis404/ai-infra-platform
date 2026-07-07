@@ -31,6 +31,9 @@ secrets/*.env.*
 # ...but never commit a local, unencrypted fnox override.
 /fnox.local.toml
 /fnox.*.local.toml
+# secrets:keygen mktemp scratch files (repo-root + secrets/); never commit them.
+/fnox.local.toml.tmp.*
+secrets/.agerecipients.tmp.*
 
 # --- rendered / generated secret manifests ---
 **/rendered-secrets*.yaml
@@ -73,6 +76,13 @@ kubernetes/**/charts/
 .claude/workflows/
 **/.codex/auth.json
 **/.codex/*.local.*
+# Repo-local Codex home ($CODEX_HOME): commit only the provider config + pinned catalog;
+# ignore all runtime state codex writes here (auth.json OAuth token, history, sessions, logs).
+# NB: the `**/.codex/*` patterns above do NOT match `.config/codex/` (dir segment is
+# `codex`, not `.codex`), so this explicit block is required.
+/.config/codex/*
+!/.config/codex/config.toml
+!/.config/codex/model-catalog-codex-defaults-0.142.5.json
 
 # --- Lima host mounts (writable virtiofs mount tree per VM; D005) ---
 # ./.local/lima/<vm>/{storage,config,...} — host-visible PVC + service config data

@@ -29,11 +29,6 @@
   ],
   "helm-values": { "enabled": false },
   "helmv3": { "enabled": false },
-  "mise": {
-    "managerFilePatterns": [
-      "/(^|/)\\.config/mise/conf\\.d/[^/]+\\.toml$/"
-    ]
-  },
   "customManagers": [
     {
       "customType": "regex",
