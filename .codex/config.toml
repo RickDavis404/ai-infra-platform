@@ -1,3 +1,6 @@
+model = "gpt-5.5"
+model_reasoning_effort = "xhigh"
+approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 project_doc_fallback_filenames = ["CLAUDE.md"]
 
@@ -8,13 +11,13 @@ args = ["mcp-grafana", "--disable-write"]
 [mcp_servers.grafana.env]
 GRAFANA_URL = "http://192.168.105.202:3000"
 
+# Disable any stale user-level stdio Langfuse entry; Codex deep-merges MCP tables.
 [mcp_servers.langfuse]
-command = "uvx"
-args = ["langfuse-mcp"]
+enabled = false
 
-[mcp_servers.langfuse.env]
-LANGFUSE_HOST = "http://192.168.105.201:3000"
-LANGFUSE_MCP_READ_ONLY = "true"
+[mcp_servers.langfuse_http]
+url = "http://192.168.105.201:3000/api/public/mcp"
+env_http_headers = { Authorization = "LANGFUSE_MCP_AUTH_HEADER" }
 
 [shell_environment_policy]
 inherit = "core"
