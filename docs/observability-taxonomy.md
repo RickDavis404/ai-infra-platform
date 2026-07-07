@@ -59,7 +59,7 @@ flowchart LR
         CLI["Native CLI OTLP<br/>(codex / claude-code)"]
         HOOK["Langfuse hook / plugin"]
         GW["LiteLLM gateway callbacks"]
-        MAC["Mac OTel Collector"]
+        MAC["Mac Grafana Alloy"]
     end
     OC["in-cluster OTel Collector<br/>OTLP :4318 /v1/*, :4317 gRPC<br/>GenAI OTTL transform, 64 MiB ceiling"]
     TE["Tempo<br/>(traces, SeaweedFS S3)"]
