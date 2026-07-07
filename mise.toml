@@ -47,6 +47,7 @@ pre-commit = "4.6.0"
 
 # --- Utilities ---
 jq = "1.8.2"
+gh = "2.96.0"      # GitHub CLI (aqua:cli/cli) — native arm64 asset; used for PR/issue automation
 # yq — Homebrew-managed (Brewfile), NOT a mise tool. It is the one CLI exception to the
 # "entire toolchain is mise-managed" rule: mise's aqua backend resolves the wrong-arch asset
 # (yq_darwin_amd64 → "Bad CPU type" on Apple Silicon) and the github backend installs it under
