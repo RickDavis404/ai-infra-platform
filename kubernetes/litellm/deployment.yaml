@@ -35,6 +35,20 @@ spec:
       # gateway schedulable (may preempt priority-0 pods) and makes kubelet memory
       # eviction pick it LAST among pods within their requests. Both profiles.
       priorityClassName: ai-infra-gateway
+      # Pin the Mac-host bridge name (mac-local llama-swap route, proxy-config
+      # api_base http://host.lima.internal:38080/v1) at the pod level. WITHOUT this,
+      # resolution goes CoreDNS -> `forward . /etc/resolv.conf` which fans out
+      # RANDOMLY across the node's upstreams: Lima's user-net DNS (192.168.5.2,
+      # resolves host.lima.internal) AND the Mac's socket_vmnet DNS (192.168.105.1,
+      # returns NXDOMAIN for it) — an intermittent NXDOMAIN that CoreDNS then
+      # negative-caches for up to 30s, so every LiteLLM retry inside that window
+      # also fails and the mac-local chat completion 500s. 192.168.5.2 is Lima's
+      # FIXED user-mode-network gateway (constant across Lima installs), the same
+      # address the guest's own /etc/hosts maps host.lima.internal to.
+      hostAliases:
+        - ip: "192.168.5.2"
+          hostnames:
+            - "host.lima.internal"
       # Spread the 2 replicas across distinct Lima nodes (required anti-affinity on
       # hostname, per the §6.2 HA matrix).
       affinity:
