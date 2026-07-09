@@ -12,8 +12,13 @@
 # CODEX_LITELLM_AUTH_HEADER env var (composed as `Bearer <key>` in secret-env.sh from
 # fnox), referenced below through env_http_headers — mirroring how the project file's
 # langfuse MCP block uses env_http_headers = { Authorization = "LANGFUSE_MCP_AUTH_HEADER" }.
+#
+# NOTE: codex appends machine-local [projects."<abs-path>"] trust_level entries to this
+# file at runtime. Those are machine-specific absolute paths and must NEVER be committed
+# (use `git add -p` to stage around them).
 model = "gpt-5.5"
 model_provider = "litellm_local"
+personality = "pragmatic"
 
 [model_providers.litellm_local]
 name = "LiteLLM Local"

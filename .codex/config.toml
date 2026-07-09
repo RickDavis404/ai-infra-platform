@@ -11,10 +11,6 @@ args = ["mcp-grafana", "--disable-write"]
 [mcp_servers.grafana.env]
 GRAFANA_URL = "http://192.168.105.202:3000"
 
-# Disable any stale user-level stdio Langfuse entry; Codex deep-merges MCP tables.
-[mcp_servers.langfuse]
-enabled = false
-
 [mcp_servers.langfuse_http]
 url = "http://192.168.105.201:3000/api/public/mcp"
 env_http_headers = { Authorization = "LANGFUSE_MCP_AUTH_HEADER" }
