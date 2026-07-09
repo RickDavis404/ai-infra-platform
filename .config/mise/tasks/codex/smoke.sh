@@ -109,6 +109,14 @@ run_live_gpt55_smoke() {
   fi
 
   cat "${stdout_file}" "${stderr_file}" >"${diagnostics_file}"
+  # Codex >=0.144 polls <base_url>/models expecting the codex model-catalog schema
+  # ({"models":[...]}); LiteLLM serves the OpenAI list schema ({"data":[...]}), so a
+  # "failed to refresh available models" warning is expected and benign through the
+  # gateway (upstream: openai/codex model-discovery vs OpenAI-compatible providers).
+  # Strip ONLY those lines; any other warn/error below must still fail the smoke.
+  grep -Fv 'failed to refresh available models' "${diagnostics_file}" \
+    >"${diagnostics_file}.filtered" || true
+  mv "${diagnostics_file}.filtered" "${diagnostics_file}"
   if grep -Eiq '(^|[^[:alpha:]])(warn|warning|err|error|fail|failed|failure|panic|traceback|exception)([^[:alpha:]]|$)' "${diagnostics_file}"; then
     err "FAIL: live Codex smoke emitted warning/error diagnostics"
     redacted_excerpt "${diagnostics_file}" | while IFS= read -r line; do err "codex diagnostic: ${line}"; done
