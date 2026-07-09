@@ -1,0 +1,17 @@
+# .config/mise/models.lock — versioned manifest for repo-managed model artifacts.
+#
+# This file establishes the repo's download URL + checksum convention for the
+# default GGUF chat model (consumed by `mise run models:fetch`). One artifact per
+# KEY=VALUE block; values must not contain spaces. Update the sha256 (and size)
+# whenever the pinned upstream file changes, in the same commit that changes the
+# URL — models:fetch refuses any artifact whose checksum does not match.
+#
+# Canonical upstream: Hugging Face repo unsloth/Qwen3.5-4B-MTP-GGUF,
+# file Qwen3.5-4B-UD-Q8_K_XL.gguf (Unsloth Dynamic Q8_K_XL quant of
+# Qwen3.5-4B-MTP). Placed locally under the repo's models-cache naming
+# convention (see setup/mac-side/launchd/com.ai-infra.llama-swap.plist).
+
+DEFAULT_CHAT_MODEL_FILENAME=unsloth-qwen3.5-4b-mtp-ud-q8-k-xl.gguf
+DEFAULT_CHAT_MODEL_URL=https://huggingface.co/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/Qwen3.5-4B-UD-Q8_K_XL.gguf
+DEFAULT_CHAT_MODEL_SHA256=5ede74f75757ab29acfe76b99f57b0ba6d5bedf7ac921e516654bcb7055adafd
+DEFAULT_CHAT_MODEL_SIZE_BYTES=6065971520

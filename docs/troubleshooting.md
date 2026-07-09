@@ -311,11 +311,13 @@ relevant mise task and deeper doc. See also [`developer-workflows.md`](developer
 - **Cause.** `AI_INFRA_DEFAULT_CHAT_MODEL` points at the default `mac-local/...`
   route, but the GGUF path from `AI_INFRA_DEFAULT_CHAT_MODEL_PATH` or the installed
   llama-swap launchd plist does not exist locally.
-- **Fix.** Place the manually obtained GGUF at the configured path, or update
-  `AI_INFRA_DEFAULT_CHAT_MODEL_PATH` and keep the local launchd host-service
-  environment in sync before reloading llama-swap. Then run `mise run models:check`
-  before `mise run litellm:smoke`. `models:fetch` is intentionally not automated
-  until the repo has a safe download URL and checksum convention.
+- **Fix.** Run `mise run models:fetch` — it downloads the default GGUF from its
+  canonical Hugging Face repo against the pinned sha256 in
+  `.config/mise/models.lock` and idempotently installs it at the configured path
+  (checksum mismatch is fatal). Alternatively, place an already-obtained GGUF at
+  the configured path, or update `AI_INFRA_DEFAULT_CHAT_MODEL_PATH` and keep the
+  local launchd host-service environment in sync before reloading llama-swap.
+  Then run `mise run models:check` before `mise run litellm:smoke`.
 
 ### macOS permission prompts for host-service paths
 

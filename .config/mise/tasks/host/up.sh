@@ -124,6 +124,27 @@ load_agent() {
   warn "launchctl bootstrap failed for ${label} after 3 attempts (check 'host:status')"
 }
 
+# Early, non-fatal surfacing of a missing default GGUF: llama-swap loads fine and
+# even answers /v1/models without the weights, so without this hint the gap only
+# shows up much later at models:check / smoke phase 3.
+warn_if_default_model_missing() {
+  # Lean profile skips llama-swap entirely — no local model serving, nothing to warn.
+  [[ "${AI_INFRA_PROFILE:-lean}" == "lean" ]] && return 0
+  local plist="${AGENTS_DIR}/com.ai-infra.llama-swap.plist" path=""
+  if [[ -n "${AI_INFRA_DEFAULT_CHAT_MODEL_PATH:-}" ]]; then
+    path="${AI_INFRA_DEFAULT_CHAT_MODEL_PATH}"
+  elif [[ -f "${plist}" && -x /usr/libexec/PlistBuddy ]]; then
+    path="$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:AI_INFRA_DEFAULT_CHAT_MODEL_PATH' "${plist}" 2>/dev/null || true)"
+  fi
+  [[ -n "${path}" ]] || return 0
+  path="${path/#\~\//${HOME}/}"
+  if [[ ! -e "${path}" ]]; then
+    warn "default chat model artifact is MISSING at ${path}"
+    warn "llama-swap will start but the default alias cannot serve; run 'mise run models:fetch'"
+    warn "(pinned download from .config/mise/models.lock), then 'mise run models:check'."
+  fi
+}
+
 main() {
   [[ "$(uname -s)" == "Darwin" ]] || die "host:up targets macOS (Darwin) only"
   stage_scripts
@@ -150,6 +171,7 @@ main() {
     install_agent "${label}"
     load_agent "${label}"
   done
+  warn_if_default_model_missing
   info "host services started; run 'mise run host:smoke' to verify"
 }
 

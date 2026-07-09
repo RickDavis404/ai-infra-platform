@@ -180,11 +180,13 @@ check_model_artifact() {
 
 print_remediation() {
   warn "Remediation:"
-  warn "  Place the manually obtained GGUF at the configured path, or set AI_INFRA_DEFAULT_CHAT_MODEL_PATH to the real local path."
+  warn "  Run 'mise run models:fetch' to download the default GGUF from its canonical Hugging Face repo"
+  warn "  against the pinned sha256 in .config/mise/models.lock (idempotent; verifies checksum)."
+  warn "  Alternatively place an already-obtained GGUF at the configured path, or set"
+  warn "  AI_INFRA_DEFAULT_CHAT_MODEL_PATH to the real local path."
   warn "  If llama-swap runs under launchd, keep $(display_path "${LAUNCHD_PLIST}") in sync and reload the service."
   warn "  Rerun this check before running 'mise run litellm:smoke'."
   warn "  See docs/configuration.md#host-model-configuration and docs/troubleshooting.md#default-local-model-artifact-is-missing."
-  warn "  models:fetch is intentionally not automated because this repo has no download URL/checksum convention for the default GGUF."
 }
 
 main() {

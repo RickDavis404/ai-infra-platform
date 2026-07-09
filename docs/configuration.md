@@ -144,9 +144,16 @@ the local GGUF path. The check first uses `AI_INFRA_DEFAULT_CHAT_MODEL_PATH`; if
 unset, it reads the installed `com.ai-infra.llama-swap` launchd host-service environment.
 If llama-swap runs under launchd, keep that launchd environment in sync with any task-env
 override so the preflight and the running backend point at the same file.
-There is intentionally no `models:fetch` task yet: the repo has a local path convention,
-but no repo-owned download URL, expected size, or checksum convention for the default GGUF.
-Place a manually obtained model at the configured path, then rerun `models:check`.
+
+To provision the artifact, run `mise run models:fetch`: it downloads the default GGUF
+from its canonical Hugging Face repo (`unsloth/Qwen3.5-4B-MTP-GGUF`, file
+`Qwen3.5-4B-UD-Q8_K_XL.gguf`) against the pinned sha256 recorded in the versioned
+manifest [`.config/mise/models.lock`](../.config/mise/models.lock), and idempotently
+places it at the resolved model path (env var, then installed plist, then the default
+`~/.cache/ai-infra/models/unsloth-qwen3.5-4b-mtp-ud-q8-k-xl.gguf`). A checksum mismatch
+is fatal — the file is never installed unverified. An already-present, checksum-matching
+file is a no-op. `host:up` also warns early (HA profile) when the artifact is absent, so
+the gap surfaces at bring-up instead of at smoke phase 3.
 
 ## Useful Runtime Flags
 
