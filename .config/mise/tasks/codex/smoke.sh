@@ -141,7 +141,8 @@ grep -q 'mcp_servers.langfuse' "${cfg}" || fail "FAIL: langfuse MCP def missing"
 
 # 3. IGNORED keys MUST be absent (Codex warns on these at the project layer).
 for k in openai_base_url chatgpt_base_url apps_mcp_product_sku model_provider \
-  model_providers notify profile profiles experimental_realtime_ws_base_url otel; do
+  model_providers notify profile profiles experimental_realtime_ws_base_url \
+  experimental_realtime_webrtc_call_base_url otel; do
   if grep -Eq "^${k}([.[:space:]=]|s?[[:space:]]*[=.[])" "${cfg}"; then
     fail "FAIL: ignored key '${k}' present in project config"
   fi

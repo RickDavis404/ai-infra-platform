@@ -53,7 +53,8 @@ The repo ships a root `.gitignore` (§11.6.1) that ignores age secret keys
 (`age.txt`, `*age*.key`, `.config/fnox/age.txt`), all decrypted material (`*.dec`,
 `secrets/*.dec`, `*.env.runtime`, `.env`, `.env.*`), rendered secret manifests, TLS/key
 material (`*.pem`, `*.key`, `*.crt`, `*.kubeconfig`), and agent-local state
-(`.claude/settings.local.json`, `.claude/otel-raw-bodies/`). It **negates** the example
+(`.claude/settings.local.json`, and the `.local/` tree — including the raw-API-body
+capture dir `.local/logs/claude/otel-raw-bodies/`). It **negates** the example
 templates so they stay tracked:
 
 ```gitignore

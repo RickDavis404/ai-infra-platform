@@ -117,9 +117,10 @@ instead of scattering across unrelated timestamps.
 Security defaults:
 
 - `secrets:*`, `codex:*`, and `claude:*` tasks are metadata-only.
-- `codex:launch` records a pre-`exec` handoff timestamp in `metadata.env`; a
-  successful `exec` replaces the shell, so no exit finalizer can run afterward.
-  (Claude has no launcher task — run `claude` directly; see §3.4 / §6.1.)
+- The `claude` / `codex` launcher tasks (and the retained `codex:launch`) record a
+  pre-`exec` handoff timestamp in `metadata.env`; a successful `exec` replaces the shell,
+  so no exit finalizer can run afterward. A bare `claude` / `codex` in a repo shell gets
+  the same env without a task; see §3.4 / §6.1.
 - Persisted streams are redacted for common secret shapes: bearer/basic auth,
   `x-litellm-api-key`, API key/token/password/private-key names, age secret
   keys, `sk-*` style keys, and credentials embedded in URLs.
@@ -179,8 +180,9 @@ Host-facing services are reached **directly by service VIP** on the shared L2; t
 | Task | Does |
 |---|---|
 | `host:up` / `host:down` / `host:status` | start / stop / status the Mac-side host services via `brew services` + launchd |
-| _(no `claude:launch`)_ | run `claude` **directly** — mise+fnox export the passthrough env on `cd`; `mise run` would force `--print` |
-| `codex:launch` | launch Codex with LiteLLM provider overrides (ignored keys injected via `--config`) |
+| `claude` / `codex` | launch Claude / Codex through the gateway with the full telemetry env (`raw=true`, real TTY); a bare `claude` / `codex` in a repo shell does the same (Codex via the committed `.config/bin/codex` PATH wrapper). `codex:launch` runs the same wrapper |
+| `claude:no-gateway` / `codex:no-gateway` | canary the direct provider path (Claude: unset the two `ANTHROPIC_*` vars; Codex: drop the `--config` provider overrides) with all telemetry still captured |
+| `codex:global-config` | merge the repo `[otel]`/trust/`[analytics]`/inert-provider blocks into `~/.codex/config.toml` (UTC-timestamped backup); run once per machine after `codex login` |
 
 ### 3.5 Secrets
 
@@ -293,44 +295,63 @@ CLIs on a fresh Mac (and the attended-GUI keychain gotcha for Claude) live in
 
 ### 6.1 Claude Code Max passthrough
 
-Configured via the committed `.claude/settings.json` (non-secret env) plus the
-generated, gitignored `.claude/settings.local.json` (secret references):
+The agent env is owned by **mise + fnox** — `conf.d/10-env.toml` `[env]` (non-secret
+routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth header);
+`.claude/settings.json` carries no env block. The generated, gitignored
+`.claude/settings.local.json` holds only secret references for the plugin surface:
 
 - `ANTHROPIC_BASE_URL = http://192.168.105.200:4000` routes all model requests
   through the LiteLLM gateway service VIP (changes *where* requests go, not *which*
   model answers; `http://127.0.0.1:34000` via `port-forward:litellm` is the fallback). There
   is **no `ANTHROPIC_API_KEY`** — proxy auth uses the virtual key in the
-  `x-litellm-api-key` header, and the client's subscription OAuth rides in
-  `Authorization`, forwarded unchanged and never logged.
+  `x-litellm-api-key` header (composed in `ANTHROPIC_CUSTOM_HEADERS`, which also carries an
+  `x-litellm-spend-logs-metadata` tag header that LiteLLM promotes to spend tags), and the
+  client's subscription OAuth rides in `Authorization`, forwarded unchanged and never logged.
 - Telemetry on: `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
   `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`; all three exporters are `otlp` over
   `http/protobuf` to the OTel Collector VIP `192.168.105.203:4318` with `/v1/*`
   paths (no `/otel` prefix; `127.0.0.1:34318` via `port-forward:otel` is the fallback).
 - `OTEL_RESOURCE_ATTRIBUTES = deployment.environment=ai-infra-platform-local` — the
   canonical environment identity (supersedes the source's bare `local-dev`).
-- Full-capture flags (privacy default-off, enabled in v1): `OTEL_LOG_USER_PROMPTS=1`,
-  `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, and
-  `OTEL_LOG_RAW_API_BODIES=file:${CLAUDE_PROJECT_DIR}/.claude/otel-raw-bodies`
-  (writes untruncated bodies to the gitignored raw-body dir — see the privacy
-  caveat in [`observability-taxonomy.md`](observability-taxonomy.md)).
+- Full-capture flags (privacy default-off, enabled here): `OTEL_LOG_USER_PROMPTS=1`,
+  `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, `OTEL_LOG_ASSISTANT_RESPONSES=1`,
+  and `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` (forces W3C traceparent into the gateway for
+  the CLI↔gateway span join). Raw bodies use **file mode**:
+  `OTEL_LOG_RAW_API_BODIES=file:{{config_root}}/.local/logs/claude/otel-raw-bodies`
+  (mise expands `{{config_root}}` to the repo root) writes untruncated request/response
+  JSON — one file per call — to the gitignored `.local/` tree and emits only a `body_ref`
+  attribute over OTLP. The host `grafana-alloy` filelog tails that dir and ships the bodies
+  to Loki, where `body_ref == log.file.path` rejoins them to the
+  `claude_code.api_request_body`/`api_response_body` events (see the privacy caveat in
+  [`observability-taxonomy.md`](observability-taxonomy.md)).
 - The `langfuse-observability` plugin (enabled via `enabledPlugins` +
   `extraKnownMarketplaces`) handles Claude Code -> Langfuse tracing.
 
 Run `claude` directly from the repo — mise+fnox export the passthrough env
-(`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) on `cd`. There is no `claude:launch`
-task; `mise run` would hand `claude` a non-TTY stdin and force it into `--print`.
+(`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) on `cd` — or `mise run claude`, a
+`raw=true` task that preserves a real TTY (a plain `mise run` would hand `claude` a
+non-TTY stdin and force `--print`). `mise run claude:no-gateway` unsets
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_CUSTOM_HEADERS` to canary the direct-to-Anthropic path
+with all telemetry still captured.
 
 ### 6.2 Codex subscription passthrough
 
-Configured via the created project `./.codex/config.toml` (honored keys) plus a
-root `AGENTS.md`; the `mise run codex:launch` task injects the ignored keys via
-`codex --config` overrides at launch time. There is **no project-level
-`CODEX_HOME`**. Codex routes through the LiteLLM gateway and uses the native
-`chatgpt/` device-flow provider for subscription passthrough; it mirrors the
-full-capture posture with `log_user_prompt = true` and the OTLP endpoints in its
-config. Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse VIP;
-the launcher derives the required Basic auth header from the existing Langfuse
-project API key pair and passes only the env-var reference through Codex config.
+Configured via the committed project `./.codex/config.toml` (honored keys — trust,
+`tool_output_token_limit`, MCP servers) plus a root `AGENTS.md`. There is **no
+project-level `CODEX_HOME`** — `~/.codex` is the only Codex home. A committed
+`.config/bin/codex` wrapper, prepended to `PATH` via mise `[env]` `_.path`, shadows the
+mise-managed binary and injects the keys Codex ignores at the project layer
+(`model_provider`, `base_url`, `wire_api = "responses"`, the proxy-auth + spend-tag
+`http_headers`) as `codex --config` overrides — so a **bare `codex` in a repo shell
+already routes through the gateway**. `mise run codex` is the equivalent `raw=true` task
+(the retained `codex:launch` runs the same wrapper); `mise run codex:no-gateway` drops the
+overrides to canary the built-in `chatgpt/` device-flow provider with telemetry still
+flowing. Codex mirrors the full-capture posture with `log_user_prompt = true` and the OTLP
+endpoints; those — plus project trust and `[analytics] enabled=false` — are merged into
+`~/.codex/config.toml` once per machine by `mise run codex:global-config` (UTC-timestamped
+backup). Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse VIP; the
+wrapper derives the required Basic auth header from the existing Langfuse project API key
+pair and passes only the env-var reference through Codex config.
 
 ```mermaid
 flowchart LR

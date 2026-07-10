@@ -4,6 +4,15 @@ approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 project_doc_fallback_filenames = ["CLAUDE.md"]
 
+# Max-capture: tool/function outputs are middle-truncated at ~10,000 BYTES by default
+# before history+model; raise to a 128k-token budget (tests exercise 100k). MUST stay a
+# TOP-LEVEL key (before the first table) so codex honors it, not a nested table key.
+tool_output_token_limit = 128000
+
+# history.persistence default is already save-all with NO max_bytes cap — keep defaults
+# (explicitly: do NOT set persistence="none" or max_bytes). ~/.codex/history.jsonl grows
+# unbounded; disk headroom is checked in the verification battery (§F).
+
 [mcp_servers.grafana]
 command = "uvx"
 args = ["mcp-grafana", "--disable-write"]

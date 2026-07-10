@@ -15,9 +15,11 @@ project; approving it records `trust_level = "trusted"` for this path in your **
 `~/.codex/config.toml` (never in the repo). If you never grant trust, the repo's model
 defaults and MCP server definitions silently do not apply.
 
-`CODEX_HOME` stays at its default (`~/.codex`) — do not repoint it into the repo. The repo
-ships policy via `.codex/config.toml` only; your credentials and history stay in your user
-home.
+`CODEX_HOME` stays at its default (`~/.codex`) — the repo does **not** repoint it. The repo ships
+project policy via `.codex/config.toml`, and `mise run codex:global-config` merges the telemetry /
+trust / `[analytics]` blocks (plus an inert `litellm_local` provider definition) into your real
+`~/.codex/config.toml` with a UTC-timestamped backup; your credentials and history stay in your
+user home.
 
 ## What this repo is
 
@@ -50,26 +52,36 @@ debugging. Keep port-forwards bound to `127.0.0.1`; they cannot prove service-VI
 
 The committed `.codex/config.toml` cannot wire the provider: Codex ignores
 `model_provider`, `model_providers`, `openai_base_url`, and `chatgpt_base_url` at the
-project layer. Provider wiring is injected at **launch** by the mise `codex:launch` task via
-`-c/--config` overrides (strongest precedence), which point Codex at
-the LiteLLM gateway with `wire_api = "responses"` and the proxy-auth header
-`X-Litellm-Api-Key = "Bearer <CODEX_LITELLM_VIRTUAL_KEY>"`. The OpenAI/Codex subscription
-itself is handled server-side by LiteLLM's native `chatgpt/` provider (device-flow OAuth),
-not by a key in this repo.
+project layer. Provider wiring is injected at **launch** by a committed `.config/bin/codex`
+wrapper — prepended to `PATH` via mise `[env]` `_.path`, so it shadows the mise-managed binary —
+which applies `-c/--config` overrides (strongest precedence) pointing Codex at the LiteLLM gateway
+with `wire_api = "responses"` and the proxy-auth header
+`X-Litellm-Api-Key = "Bearer <CODEX_LITELLM_VIRTUAL_KEY>"`. The OpenAI/Codex subscription itself is
+handled server-side by LiteLLM's native `chatgpt/` provider (device-flow OAuth), not by a key in
+this repo.
 
-Launch Codex through the task so the overrides and secrets are applied:
+Because the wrapper is on `PATH`, a **bare `codex` in a repo shell already routes through the
+gateway** — no task required. Equivalent explicit launchers:
 
 ```bash
-mise run codex:launch  # sources fnox+age env, applies -c overrides, execs codex
+mise run codex             # raw=true TTY task; execs the same wrapper (codex:launch runs it too)
+mise run codex:no-gateway  # drops the -c overrides -> built-in ChatGPT provider, telemetry still on
 ```
+
+One-time per machine, `mise run codex:global-config` merges the repo's `[otel]` exporters, project
+trust, `[analytics] enabled=false`, and an inert `litellm_local` provider definition into your real
+`~/.codex/config.toml` (UTC-timestamped backup) so bare-`codex` telemetry ships to the local
+collector instead of OpenAI statsig. `CODEX_HOME` is **not** repointed — `~/.codex` is the only
+Codex home.
 
 ## Remote / non-interactive shells — apply the mise env explicitly
 
-mise wires the gateway provider env + `CODEX_HOME` from a **prompt-time shell hook** (it fires when
-zsh renders an interactive prompt on `cd`). Over `ssh <host> <cmd>`, inside a non-TTY child, or in
-any scripted / `-c` invocation, that hook **never runs** — so a bare `codex` there talks **direct**
-to the provider (bypassing LiteLLM) and may not even see `CODEX_HOME`. Apply the env explicitly by
-sourcing `mise hook-env` inside a login shell:
+mise wires the gateway provider env — and prepends the `.config/bin/codex` wrapper to `PATH` — from
+a **prompt-time shell hook** (it fires when zsh renders an interactive prompt on `cd`). Over
+`ssh <host> <cmd>`, inside a non-TTY child, or in any scripted / `-c` invocation, that hook **never
+runs** — so a bare `codex` there resolves to the unwrapped binary and talks **direct** to the
+provider (bypassing LiteLLM). Apply the env explicitly by sourcing `mise hook-env` inside a login
+shell:
 
 ```bash
 ssh <host> zsh -l -i -c 'cd <repo> && eval "$(mise hook-env -s zsh)" && codex exec "…" </dev/null'
@@ -102,7 +114,7 @@ CLI's OAuth session (`claude` / `codex`). The CLI is the **only** authorized OAu
 `curl` or any hand-rolled HTTP client can **not** validly test a subscription model — even
 through the LiteLLM gateway — because it cannot reproduce the CLI's OAuth session handling.
 Discard any such result (2xx or 4xx/5xx). To test passthrough, drive the real CLI at the
-gateway VIP (Codex: `mise run codex:launch`; Claude: `claude` with
+gateway VIP (Codex: `mise run codex`, or a bare `codex` in a repo shell; Claude: `claude` with
 `ANTHROPIC_BASE_URL=http://192.168.105.200:4000`). A launch that does not set the base URL to
 the VIP runs **direct** to the provider, so "it works" proves only the direct path, not the
 passthrough.

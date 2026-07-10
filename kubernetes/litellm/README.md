@@ -163,6 +163,16 @@ When keys are out of sync (consumers 401, table wiped, or a forced rotation):
   with Claude Code turn traces in the Langfuse Sessions view.
 - OTLP/HTTP traces/metrics/logs are exported to the in-cluster OTel Collector in the
   `lgtm` plane on plain `:4318` with `/v1/{traces,metrics,logs}` paths.
+- **Max-capture posture** (`proxy-config.yaml` `litellm_settings`):
+  - The `s3_v2` callback archives the full `StandardLoggingPayload` JSON (messages,
+    response, tokens, cost, metadata) of every call — on success **and** failure — to the
+    in-cluster SeaweedFS bucket `litellm-payloads` (path-style S3; object keys prefixed by
+    team + virtual-key alias). The bucket is cluster-internal only and never published.
+  - `global_disable_no_log_param: true` — a client can **not** suppress logging with a
+    `no-log: true` request-body param; every callback always fires.
+  - Spend logs are **never purged** (`maximum_spend_logs_retention_period` is unset →
+    retain forever); the `x-litellm-spend-logs-metadata` header the agent CLIs send is
+    promoted to spend-log metadata and spend tags.
 
 ## ChatGPT passthrough (shipped) + examples-only exclusions
 
