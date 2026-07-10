@@ -157,6 +157,42 @@ assert_etcd_whole() {
   fi
 }
 
+# Restore HA posture for MOVABLE workloads once the node has rejoined. Kubernetes
+# never reschedules already-Running pods, so a stateless Deployment replica that
+# migrated onto a surviving node during the outage stays there and keeps that node
+# memory-saturated (litellm carries a 1536Mi anti-meltdown request floor — see
+# kubernetes/litellm/deployment.yaml). A PVC-pinned singleton such as
+# prometheus-server-0 is then permanently unschedulable on its home node: it holds
+# priority 0 and cannot preempt litellm's ai-infra-gateway PriorityClass (100000).
+# Rolling the movable Deployments after the node is Ready re-spreads their replicas
+# across all nodes and frees the headroom the singleton needs — so the later pod-loss
+# phase, which deletes that singleton, can reschedule it. Bounded by RTO.
+restore_movable_posture() {
+  local timeout="${1:-${RTO_TIMEOUT}}"
+  info "restoring HA posture: rolling movable stateless Deployments to re-spread replicas"
+  local entry ns sel name found
+  for entry in \
+    "litellm|app.kubernetes.io/name=litellm" \
+    "langfuse|app.kubernetes.io/component=web" \
+    "langfuse|app.kubernetes.io/component=worker"; do
+    ns="${entry%%|*}"
+    sel="${entry#*|}"
+    found=0
+    while read -r name; do
+      [[ -n "${name}" ]] || continue
+      found=1
+      info "rolling deploy/${name} (ns ${ns}) to rebalance replicas across nodes"
+      kc -n "${ns}" rollout restart "deploy/${name}" >/dev/null 2>&1 ||
+        die "rollout restart deploy/${name} (ns ${ns}) failed"
+      kc -n "${ns}" rollout status "deploy/${name}" --timeout="${timeout}s" >/dev/null 2>&1 ||
+        die "deploy/${name} (ns ${ns}) did not converge within ${timeout}s after posture-restore roll"
+    done < <(kc -n "${ns}" get deploy -l "${sel}" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+    [[ "${found}" -eq 1 ]] || info "no movable Deployment matched '${sel}' in ns ${ns} (skipping)"
+  done
+  info "HA posture restored: movable Deployments re-spread across all Ready nodes"
+}
+
 main() {
   guard
   need kubectl
@@ -188,6 +224,11 @@ main() {
   assert_etcd_whole
   wait_cnpg_reconverge
   wait_seaweedfs_replication
+  # Re-spread movable Deployments BEFORE declaring success, then re-assert the
+  # fingerprint below — recovery is the phase that must return the platform to full
+  # HA posture (k8s never rebalances on its own), so it is done here even though the
+  # node is already Running when this phase follows node-loss in the full suite.
+  restore_movable_posture
 
   if [[ -n "${FP_PG}" ]]; then
     verify_pg

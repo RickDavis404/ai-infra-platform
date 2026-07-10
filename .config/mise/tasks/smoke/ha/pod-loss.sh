@@ -79,13 +79,36 @@ canary_write_pg() {
   [[ -n "${FP_PG}" ]] || die "could not snapshot Postgres fingerprint"
 }
 
+# After the CNPG primary pod is deleted, failover is not instantaneous: the old
+# primary lingers in Terminating while the operator promotes a standby, so a single
+# sample can momentarily see zero pods labelled instanceRole=primary. Wait (bounded
+# by RTO) for BOTH a freshly promoted primary AND the operator to report the cluster
+# healthy again. This does NOT weaken the assertion — if no primary appears and the
+# cluster is not healthy within the RTO it still fails. Prints the primary on stdout.
+wait_pg_primary_healthy() {
+  local elapsed=0 primary phase
+  info "waiting for CNPG failover to complete (new primary + healthy cluster, RTO ${RTO_TIMEOUT}s)"
+  while [[ "${elapsed}" -lt "${RTO_TIMEOUT}" ]]; do
+    primary="$(pg_primary)"
+    phase="$(kc -n "${DATA_NS}" get cluster langfuse-pg \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
+    if [[ -n "${primary}" && "${phase}" == "Cluster in healthy state" ]]; then
+      info "CNPG langfuse-pg failed over: primary ${primary}, cluster healthy"
+      printf '%s\n' "${primary}"
+      return 0
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+  return 1
+}
+
 verify_pg() {
   local primary fp
-  primary="$(pg_primary)"
-  [[ -n "${primary}" ]] || {
-    note_fail "no langfuse-pg primary after pod loss"
+  if ! primary="$(wait_pg_primary_healthy)"; then
+    note_fail "no langfuse-pg primary after pod loss (failover did not complete within RTO)"
     return
-  }
+  fi
   fp="$(kc -n "${DATA_NS}" exec "${primary}" -c postgres -- \
     psql -At -d "$(canary_db)" -c "SELECT md5(string_agg(tag,'')) FROM ha_canary;" 2>/dev/null || echo '')"
   if [[ "${fp}" == "${FP_PG}" ]]; then
