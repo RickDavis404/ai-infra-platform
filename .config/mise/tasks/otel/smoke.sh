@@ -63,9 +63,14 @@ readonly ENVIRONMENT="ai-infra-platform-local"
 readonly HOST_ID="mac-local"
 readonly AI_CLIENT="smoke-test"
 SESSION_ID="smoke-$(date +%s)-$$"
-# 32 hex chars = 16-byte trace id; 16 hex = 8-byte span id.
-TRACE_ID="$(printf '%032x' "$((RANDOM * RANDOM * RANDOM))$(date +%N 2>/dev/null || echo 0)" | tail -c 32)"
-SPAN_ID="$(printf '%016x' "$((RANDOM * RANDOM))$$" | tail -c 16)"
+# 32 hex chars = 16-byte trace id; 16 hex = 8-byte span id. Read raw bytes from
+# /dev/urandom via od (POSIX): fixed-length, always-valid hex. The previous
+# arithmetic approach concatenated $((RANDOM*RANDOM*RANDOM)) with `date +%N`;
+# wherever %N yields real nanoseconds (GNU/uutils date, e.g. the mise-pinned
+# toolchain) the decimal exceeds 64-bit and `printf %x` aborts with
+# "Result too large" — it only "worked" on stock BSD date where %N is unsupported.
+TRACE_ID="$(od -An -tx1 -N16 /dev/urandom | tr -d ' \n')"
+SPAN_ID="$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
 readonly SESSION_ID TRACE_ID SPAN_ID
 readonly METRIC_NAME="smoke_test_canary_total"
 readonly LOG_BODY="otel-smoke log ${SESSION_ID}"
