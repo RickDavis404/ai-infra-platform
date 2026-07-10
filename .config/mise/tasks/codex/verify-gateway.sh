@@ -150,7 +150,7 @@ run_canary() {
       --config 'model_providers.litellm_local.wire_api="responses"' \
       --config 'model_providers.litellm_local.supports_websockets=false' \
       --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
-      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${key}\" }" \
+      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${key}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex-verify\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
       "${prompt}"
   ) >"${stdout_file}" 2>"${stderr_file}"
   rc=$?
@@ -194,10 +194,23 @@ run_canary() {
 }
 
 # --- Downstream assertion: LiteLLM spend-log row -------------------------------
+# _expected_spend_model <model> — the `model` value LiteLLM records in the
+# /spend/logs row for <model>. Normally the verbatim chatgpt/<model>, but the
+# proxy rewrites a few codex slugs to a different upstream model before logging:
+# gpt-5.3-codex is served as gpt-5.3-codex-spark, so its row reads
+# chatgpt/gpt-5.3-codex-spark rather than chatgpt/gpt-5.3-codex. Add further
+# rewrites here as the passthrough gains them; everything else stays verbatim.
+_expected_spend_model() {
+  case "$1" in
+  gpt-5.3-codex) printf 'chatgpt/gpt-5.3-codex-spark' ;;
+  *) printf 'chatgpt/%s' "$1" ;;
+  esac
+}
+
 # _check_spend_row <model> <since-compact> — one-shot probe (called under poll_until).
 _check_spend_row() {
   local model="$1" since="$2" resp full
-  full="chatgpt/${model}"
+  full="$(_expected_spend_model "${model}")"
   resp="$(curl -fsS \
     -H "Authorization: Bearer ${MASTER_KEY}" \
     -G "${BASE}/spend/logs" \
@@ -311,12 +324,14 @@ main() {
     if run_canary "${model}" "${work}"; then
       canary_res="PASS"
 
+      local expected_spend_model
+      expected_spend_model="$(_expected_spend_model "${model}")"
       if poll_until "${SPEND_TIMEOUT}" "${POLL_INTERVAL}" _check_spend_row "${model}" "${since_compact}"; then
         spend_res="PASS"
-        info "spend-log row present for chatgpt/${model}"
+        info "spend-log row present for ${expected_spend_model}"
       else
         spend_res="FAIL"
-        err "FAIL: no /spend/logs row with model chatgpt/${model} since ${since_iso}"
+        err "FAIL: no /spend/logs row with model ${expected_spend_model} since ${since_iso}"
       fi
 
       if poll_until "${LANGFUSE_TIMEOUT}" "${POLL_INTERVAL}" _check_langfuse_trace "${model}" "${since_iso}"; then

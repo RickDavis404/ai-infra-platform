@@ -84,7 +84,7 @@ run_live_gpt55_smoke() {
       --config 'model_providers.litellm_local.wire_api="responses"' \
       --config 'model_providers.litellm_local.supports_websockets=false' \
       --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
-      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${codex_key}\" }" \
+      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${codex_key}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex-smoke\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
       "${prompt}"
   ) >"${stdout_file}" 2>"${stderr_file}"
   rc=$?

@@ -35,7 +35,7 @@ never `pip install`s it at runtime.
 | `deployment.yaml`       | 2 replicas, RollingUpdate `maxUnavailable:0`, anti-affinity, probes, init wait-for-postgres. |
 | `service.yaml`          | LoadBalancer VIP `192.168.105.200:4000` (Cilium L2, port `http`) + Prometheus scrape annotations. |
 | `proxy-config.yaml`     | ConfigMap `litellm-config` → `proxy_config.yaml` (general/litellm settings + model_list). |
-| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (§8a structured uvicorn access logs + §8b ChatGPT client-OAuth passthrough patch). |
+| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (§8a structured uvicorn access logs + §8b ChatGPT client-OAuth passthrough patch + §8c spend-log credential scrub). |
 | `pdb.yaml`              | PodDisruptionBudget `minAvailable: 1`. |
 | `keys/`                 | Virtual-key provisioning base (separate apply; see below). |
 
@@ -173,6 +173,13 @@ When keys are out of sync (consumers 401, table wiped, or a forced rotation):
   - Spend logs are **never purged** (`maximum_spend_logs_retention_period` is unset →
     retain forever); the `x-litellm-spend-logs-metadata` header the agent CLIs send is
     promoted to spend-log metadata and spend tags.
+  - Because retention is forever, the `sitecustomize.py` §8c patch scrubs the forwarded
+    subscription-credential VALUES (Authorization/Bearer, `chatgpt-account-id`,
+    `x-api-key`, cookies, …) out of the `proxy_server_request.body` snapshot LiteLLM
+    stores in every `LiteLLM_SpendLogs` row — it masks the credential carriers
+    (`extra_headers`, `metadata.headers`, `litellm_metadata.headers`) and drops the
+    duplicate `provider_specific_header`, while leaving the captured messages/response
+    and the live OAuth passthrough untouched.
 
 ## ChatGPT passthrough (shipped) + examples-only exclusions
 
