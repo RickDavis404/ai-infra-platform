@@ -63,6 +63,38 @@ Launch Codex through the task so the overrides and secrets are applied:
 mise run codex:launch  # sources fnox+age env, applies -c overrides, execs codex
 ```
 
+## Remote / non-interactive shells — apply the mise env explicitly
+
+mise wires the gateway provider env + `CODEX_HOME` from a **prompt-time shell hook** (it fires when
+zsh renders an interactive prompt on `cd`). Over `ssh <host> <cmd>`, inside a non-TTY child, or in
+any scripted / `-c` invocation, that hook **never runs** — so a bare `codex` there talks **direct**
+to the provider (bypassing LiteLLM) and may not even see `CODEX_HOME`. Apply the env explicitly by
+sourcing `mise hook-env` inside a login shell:
+
+```bash
+ssh <host> zsh -l -i -c 'cd <repo> && eval "$(mise hook-env -s zsh)" && codex exec "…" </dev/null'
+```
+
+For repeated remote commands, multiplex the ssh connection so each reuses one session (in
+`~/.ssh/config`):
+
+```
+Host <host>
+  ControlMaster auto
+  ControlPath ~/.ssh/cm-%r@%h:%p
+  ControlPersist 10m
+```
+
+When a remote command needs SQL, feed it over **stdin** rather than embedding it as an argument —
+this sidesteps the nested single/double-quote bugs that ssh + `zsh -c` layering creates:
+
+```bash
+kubectl -n litellm exec -i pod/litellm-pg-1 -c postgres -- \
+  psql -U postgres -d litellm -At <<'SQL'
+SELECT 1;
+SQL
+```
+
 ## Testing subscription (OAuth) models — real CLI only, NEVER curl
 
 The Claude and OpenAI/Codex **subscription** models are authenticated by the original agent

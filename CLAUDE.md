@@ -55,6 +55,21 @@ activation makes `cd` into the repo inject the gateway env + `CODEX_HOME`, so ne
 
 Full install / auth / verify steps + troubleshooting: [`docs/agent-auth.md`](docs/agent-auth.md).
 
+## Remote / non-interactive shells — mise env hooks do NOT fire
+
+mise injects the gateway env + `CODEX_HOME` from a **prompt-time hook** (it runs when zsh renders a
+prompt), so `ssh <host> <cmd>`, a non-TTY child, or any scripted invocation **never** gets it — the
+command then talks **direct** to the provider (or misses `CODEX_HOME`). Apply the env **explicitly**:
+
+```sh
+ssh <host> zsh -l -i -c 'cd <repo> && eval "$(mise hook-env -s zsh)" && <command>'
+```
+
+For repeated remote calls, multiplex the connection (ssh `ControlMaster auto` + `ControlPath` +
+`ControlPersist`) so each reuses one session. When a remote command needs SQL, pipe it over **stdin**
+to dodge nested-quoting bugs — e.g. `kubectl -n litellm exec -i pod/litellm-pg-1 -c postgres -- psql
+-U postgres -d litellm -At` with the SQL fed on stdin. Fuller pattern in [`AGENTS.md`](AGENTS.md).
+
 ## Delegation default — "ultracode" means USE Workflow + subagents
 
 When the user invokes **ultracode**, or asks to use a workflow / subagents / "delegate" /
