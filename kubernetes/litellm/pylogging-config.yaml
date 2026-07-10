@@ -173,6 +173,11 @@ data:
       / `ChatGPTConfig._get_openai_compatible_provider_info`: prefer a forwarded
       `Authorization: Bearer` (+ `chatgpt-account-id`) header; fall back to the
       authenticator only if none was forwarded, and NEVER raise on auth failure.
+    - `ChatGPTResponsesAPIConfig.should_fake_stream`: unconditionally `False`. The stock
+      implementation fake-streams any model absent from litellm's static
+      model_prices_and_context_window.json registry (custom gpt-* slugs always are),
+      which strips `stream` from the outbound body and 400s against chatgpt.com's
+      backend-api (which requires literal `stream: true`, no non-streaming surface).
     - `litellm_pre_call_utils.add_provider_specific_headers_to_request`: in addition to
       the stock Anthropic behaviour, capture the Codex passthrough header allowlist
       from the inbound client request and attach them as a chatgpt-scoped
@@ -443,6 +448,57 @@ data:
             ChatGPTResponsesAPIConfig._chatgpt_passthrough_auth_patch = True
         except Exception as exc:  # noqa: BLE001
             _log.warning("ChatGPT passthrough: responses validate_environment patch failed (%s).", exc)
+
+        # --- Pin ChatGPTResponsesAPIConfig.should_fake_stream to False -------------
+        # The ChatGPT Codex backend is STREAM-ONLY, and the provider's own
+        # transform_responses_api_request already forces stream=True unconditionally,
+        # so fake-streaming is never correct for chatgpt/*. The inherited
+        # OpenAIResponsesAPIConfig.should_fake_stream consults the pinned image's
+        # built-in cost map and returns True for any model the map doesn't know
+        # (e.g. gpt-5.5, gpt-5.6-*); that path strips `stream` from the outbound
+        # body via _prepare_fake_stream_request and triggers an upstream 400
+        # "Stream must be set to true" — exactly the built-in-map dependence the
+        # gpt-* wildcard exists to avoid. Forcing False keeps the wildcard path
+        # byte-identical in shape to the exact-match path.
+        try:
+            def _responses_should_fake_stream(self, model, stream, custom_llm_provider=None):
+                return False
+
+            ChatGPTResponsesAPIConfig.should_fake_stream = _responses_should_fake_stream
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: should_fake_stream patch failed (%s).", exc)
+
+        # --- Override ChatGPTResponsesAPIConfig.should_fake_stream ------------------
+        # The stock OpenAIResponsesAPIConfig.should_fake_stream() (inherited unless
+        # overridden) calls litellm.utils.supports_native_streaming(), which looks the
+        # model up in litellm's STATIC model_prices_and_context_window.json registry
+        # and fail-closed returns False ("model doesn't support native streaming") for
+        # any model name the lookup doesn't recognise. Our gpt-* passthrough slugs
+        # (gpt-5.6-sol/terra/luna, ...) are custom names never published to that
+        # registry, so the lookup misses and should_fake_stream() wrongly returns
+        # True. When fake_stream is True, llm_http_handler._prepare_fake_stream_request()
+        # does data.pop("stream", None) — deleting "stream" from the outbound JSON
+        # body entirely — even though transform_responses_api_request() above
+        # unconditionally set request["stream"] = True moments earlier. The POST to
+        # https://chatgpt.com/backend-api/codex/responses then arrives with no
+        # "stream" key at all; ChatGPT's backend-api has no non-streaming Responses
+        # surface and rejects it: 400 {"detail":"Stream must be set to true"}.
+        # Verified live against the deployed pod (2026-07-09/10): calling
+        # ChatGPTResponsesAPIConfig().should_fake_stream(model=..., stream=True,
+        # custom_llm_provider="chatgpt") returns False for "gpt-5.3-codex-spark"
+        # (already known to the static registry, so unaffected) but True for
+        # "gpt-5.6-sol" / "gpt-5.6-terra" / "gpt-5.6-luna" (unrecognised, so wrongly
+        # faked) — matching the observed canary failures exactly. The ChatGPT
+        # Responses API ALWAYS supports (and requires) native streaming, so faking a
+        # stream is never correct for this provider regardless of what the static
+        # model-cost registry does or doesn't contain; unconditionally disable it.
+        try:
+            def _chatgpt_should_fake_stream(self, model, stream, custom_llm_provider=None):
+                return False
+
+            ChatGPTResponsesAPIConfig.should_fake_stream = _chatgpt_should_fake_stream
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("ChatGPT passthrough: should_fake_stream patch failed (%s).", exc)
 
         # --- Override ChatGPTConfig.validate_environment (chat path) ---------------
         try:
