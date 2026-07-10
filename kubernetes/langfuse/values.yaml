@@ -192,6 +192,20 @@ langfuse:
       value: "lightweight_update"
     - name: CLICKHOUSE_USE_LIGHTWEIGHT_UPDATE
       value: "true"
+    # --- Langfuse V4 Fast Preview: `dual` keeps legacy tables populated so the LiteLLM
+    # Langfuse SDK-v2 callback keeps writing; opt-in exposes the MCP observation/metrics
+    # tools + /api/public/v2 APIs. PREREQUISITE (NOT auto-migrated): the ClickHouse events
+    # schema (events_core/events_full/observations_batch_staging + MV) must be created
+    # manually (langfuse discussion #14157, adapted ON CLUSTER 'default' +
+    # ReplicatedReplacingMergeTree) or preview reads return empty. NEVER set
+    # events_only (it 400s the LiteLLM generation-create ingestion path).
+    # LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR intentionally UNSET (default dual_write).
+    - name: LANGFUSE_MIGRATION_V4_WRITE_MODE
+      value: "dual"
+    - name: LANGFUSE_MIGRATION_V4_ALLOW_PREVIEW_OPT_IN
+      value: "true"
+    - name: CLICKHOUSE_DISABLE_LAZY_MATERIALIZATION
+      value: "true"
 
 # No chart-native Ingress. Access is kubectl port-forward svc/langfuse-web 3000:3000.
 ingress:

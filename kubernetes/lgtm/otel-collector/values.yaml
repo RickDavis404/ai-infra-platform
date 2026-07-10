@@ -192,6 +192,18 @@ config:
         - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
         - set(attributes["gen_ai.usage.cache_read_tokens"], attributes["cache_read_tokens"]) where attributes["cache_read_tokens"] != nil
         - set(attributes["gen_ai.usage.cache_creation_tokens"], attributes["cache_creation_tokens"]) where attributes["cache_creation_tokens"] != nil
+        # §F: map assistant/completion output into GenAI semconv so claude-code Tempo
+        # spans AND the Langfuse generation carry the model output. Source attr names
+        # TO-CONFIRM against live claude-code 2.1.206 spans during the battery
+        # (candidates below are additive no-ops when absent; error_mode: ignore).
+        - set(attributes["gen_ai.completion.0.content"], attributes["assistant_response"]) where attributes["assistant_response"] != nil
+        # Folded scalar (>-) rejoins to the identical single-line OTTL statement at
+        # load time; wrapped only to keep each physical line within the 160-char
+        # yamllint limit. Do NOT change the token spacing (fold reproduces it verbatim).
+        - >-
+          set(attributes["gen_ai.completion.0.content"], attributes["response_text"])
+          where attributes["gen_ai.completion.0.content"] == nil
+          and attributes["response_text"] != nil
     # Langfuse should only receive Claude Code spans; drop everything else on the
     # traces/langfuse pipeline (every trace still reaches Tempo in full).
     filter/langfuse_only_claude_code:

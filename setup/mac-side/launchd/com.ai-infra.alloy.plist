@@ -40,6 +40,8 @@
       <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:__HOME__/.local/bin</string>
       <key>HOME</key>
       <string>__HOME__</string>
+      <key>AI_INFRA_RAW_BODIES_DIR</key>
+      <string>__RAW_BODIES_DIR__</string>
     </dict>
 
     <key>RunAtLoad</key>
