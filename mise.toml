@@ -11,12 +11,13 @@
 
 [settings]
 lockfile = true
-# npm:@openai/codex is pinned to a release published the same day (see [tools]); it is
-# younger than a global `minimum_release_age` gate a remote box may set, which would make
-# `mise install` refuse to resolve it. Exclude just that tool from the age gate so the
+# npm:@openai/codex and npm:@anthropic-ai/claude-code are each pinned to a release published
+# the same day (see [tools]); they are younger than a global `minimum_release_age` gate a remote
+# box may set, which would make `mise install` refuse to resolve them. The agent CLIs release
+# same-day versions the repo wants promptly, so exclude just those tools from the age gate so the
 # committed config reproduces on every machine WITHOUT any env var. (No-op when no gate is
 # configured; the exclude key is the documented remedy — `mise settings minimum_release_age_excludes`.)
-minimum_release_age_excludes = ["npm:@openai/codex"]
+minimum_release_age_excludes = ["npm:@openai/codex", "npm:@anthropic-ai/claude-code"]
 
 [tools]
 # --- Secrets toolchain ---
@@ -70,10 +71,17 @@ ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bit
 # one-time `mise run tools:mmdc-setup` is still required. See that task.
 "npm:@mermaid-js/mermaid-cli" = "11.16.0"
 
-# --- Coding agent CLI (npm backend) ---
+# --- Coding agent CLIs (npm backend) ---
 # codex CLI, mise-managed via the npm backend (the aqua registry backend for codex lags
 # upstream releases; converge to a bare aqua codex pin later).
 "npm:@openai/codex" = "0.144.0"
+# Claude Code CLI, mise-managed via the npm backend; supersedes the native-installer binary
+# (curl https://claude.ai/install.sh) for in-repo use, so the whole agent toolchain is pinned
+# and reproducible. The native installer stays optional for out-of-repo use.
+# npm_args opts this ONE package back into its postinstall (mise defaults to --ignore-scripts):
+# the wrapper package's postinstall downloads the platform-native `claude` binary, without which
+# `claude` aborts with "native binary not installed". Scoped to the trusted @anthropic-ai package.
+"npm:@anthropic-ai/claude-code" = { version = "2.1.206", npm_args = "--ignore-scripts=false" }
 
 # --- Host model-serving proxy (github backend) ---
 # llama-swap — the on-demand model front (:38080) that JIT-launches llama-server /

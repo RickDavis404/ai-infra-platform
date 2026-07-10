@@ -8,34 +8,41 @@ verifying that their requests route through the gateway. It is the companion to
 *configuration*) and to the repo-root [`CLAUDE.md`](../CLAUDE.md) hard rule on
 testing subscription models.
 
-> **The repo installs Codex (mise-managed) but authenticates neither CLI.** Codex
-> now arrives via the `npm:@openai/codex` pin in `mise.toml`; Claude Code is still
-> installed out-of-band on the login PATH. Both are authenticated **out-of-band, per
-> machine, with subscription OAuth only — never an API key.** Every additional MacBook
-> in the fleet repeats the auth steps below; the OAuth session is not shared or
-> portable between machines.
+> **The repo installs both CLIs (mise-managed) but authenticates neither.** Codex and
+> Claude Code now both arrive via `npm:` backend pins in `mise.toml`
+> (`npm:@openai/codex` and `npm:@anthropic-ai/claude-code`); the native Claude
+> installer (`curl https://claude.ai/install.sh`) stays optional, for out-of-repo use
+> only. Both are authenticated **out-of-band, per machine, with subscription OAuth only
+> — never an API key.** Every additional MacBook in the fleet repeats the auth steps
+> below; the OAuth session is not shared or portable between machines.
 
 ## 1. Install the CLIs
 
-**Codex is mise-managed in-repo** — an `npm:@openai/codex` backend pin in `mise.toml`,
-so a plain `mise install` (part of the normal bootstrap) provides it. Do **not**
-`brew install --cask codex` or `npm install -g @openai/codex`: both drift from the
-pinned version, and a global npm install entangles the mise-pinned `node` toolchain.
+**Both CLIs are mise-managed in-repo** — `npm:@openai/codex` and
+`npm:@anthropic-ai/claude-code` backend pins in `mise.toml`, so a plain `mise install`
+(part of the normal bootstrap) provides both. Do **not** `brew install --cask codex`,
+run the `curl … install.sh` installer for the in-repo binary, or `npm install -g`
+either package: they drift from the pinned versions, and a global npm install
+entangles the mise-pinned `node` toolchain.
 
-**Claude Code** is still installed on the **host login PATH, independent of mise**
-(do **not** `npm install -g` it either — same `node` entanglement):
+The Claude Code npm wrapper runs a **postinstall** that downloads the platform-native
+`claude` binary. mise skips lifecycle scripts by default, so the pin carries
+`npm_args = "--ignore-scripts=false"` to opt that one package back in — without it,
+`claude` aborts with *"native binary not installed"*. No extra step is required; a
+plain `mise install` handles it.
 
 | Agent | Install command | Lands in |
 |---|---|---|
 | **Codex** | `mise install` (resolves the `npm:@openai/codex` pin in `mise.toml`) | mise shim, on PATH inside the repo |
-| **Claude Code** | `curl -fsSL https://claude.ai/install.sh \| bash` | native arm64 build → `~/.local/bin` |
+| **Claude Code** | `mise install` (resolves the `npm:@anthropic-ai/claude-code` pin in `mise.toml`) | mise shim, on PATH inside the repo |
 
-Ensure **`~/.local/bin` is on PATH** for the Claude install (add it in `~/.zshrc`
-before the mise activation line if it is not already there). Confirm both resolve —
-Codex through mise (its shim is on PATH only inside the repo):
+The native Claude installer (`curl -fsSL https://claude.ai/install.sh | bash` →
+`~/.local/bin`) stays **optional, for out-of-repo use only**; if you use it, ensure
+**`~/.local/bin` is on PATH** (add it in `~/.zshrc` before the mise activation line).
+Confirm both resolve — each is a mise shim, on PATH only inside the repo:
 
 ```sh
-command -v claude
+mise --cd <repo-root> which claude
 mise --cd <repo-root> which codex
 ```
 
@@ -73,9 +80,14 @@ ends up with no session.
 
 ### Claude Code (Anthropic) — login keychain, attended GUI only
 
+Claude is now a mise shim too, so — exactly like Codex — log in from **outside** the
+repo using the mise-managed binary **by path**. Running it by path from `~` keeps the
+gateway env out of the session **and** makes the keychain item be created and owned by
+*that* binary (which matters for the per-binary ACL, below):
+
 ```sh
-cd ~            # outside the repo
-claude          # then type: /login  -> Anthropic Max/Pro subscription OAuth
+cd ~                                       # outside the repo, so no gateway env is injected
+"$(mise --cd <repo-root> which claude)"    # then type: /login  -> Anthropic Max/Pro OAuth
 ```
 
 Claude stores its OAuth session in the **macOS login keychain** (not a file). This
@@ -100,6 +112,24 @@ carries the single most surprising gotcha in the whole setup:
 > *(Verified 2026-07-07: after clicking the keychain popup, a headless `claude --print` still
 > returned `Not logged in`.)* The only headless workaround is to unlock the keychain in that
 > ssh session first: `security unlock-keychain login.keychain-db` (interactive password).
+
+> **Keychain ACLs are per-BINARY — re-approve after every version bump.** The
+> **Always Allow** grant from gate 2 is tied to the *specific* `claude` binary that
+> requested it. The mise-managed `claude` lives at a **version-specific** install path
+> (`~/.local/share/mise/installs/npm-anthropic-ai-claude-code/<version>/…`), so it is a
+> *different* binary than the native-installer `claude` — **and** a different binary
+> after every version bump. Each therefore needs **one** fresh attended **Always Allow**
+> click per machine on its first in-repo run (and again on the first run after a bump);
+> until it is clicked, headless runs return `Not logged in` even with the
+> `security unlock-keychain` workaround active. This is why the login recipe above runs
+> `claude` **by its mise path** — the keychain item is created and owned by the same
+> binary you will run in-repo.
+>
+> *Mitigation (documented, not wired up):* `claude setup-token` mints a long-lived
+> OAuth token usable via the **`CLAUDE_CODE_OAUTH_TOKEN`** env var. Because that path is
+> **binary-independent**, it sidesteps the per-version ACL re-approval entirely and
+> could be fnox-sealed alongside the other gateway secrets if per-version re-approval
+> proves too costly for headless/ssh use.
 
 Claude's keychain OAuth is **not portable** between machines — re-login on every
 box. Codex is unaffected by all of this because its auth is the plain
@@ -136,7 +166,9 @@ For the fuller interactive routing test (`mise run codex:launch`, and running
 | Symptom | Cause | Fix |
 |---|---|---|
 | `claude`: `Not logged in · Please run /login` (even after logging in) | Running over headless ssh: the keychain is locked in this session, or the keychain ACL prompt was never approved | Use an **attended GUI Terminal**; unlock the login keychain in that GUI session; click **Always Allow** on the "claude wants to use confidential information" prompt |
-| `command not found: claude` / `codex` | Install dir not on PATH | Claude: ensure `~/.local/bin` is on PATH in `~/.zshrc`, re-open the shell. Codex: it is a mise shim on PATH only inside the repo — run it from the repo, or resolve it with `mise --cd <repo-root> which codex` |
+| `command not found: claude` / `codex` | Both are mise shims, on PATH only inside the repo | Run from the repo, or resolve by path with `mise --cd <repo-root> which claude` / `… which codex`. (Only if you used the optional native Claude installer: ensure `~/.local/bin` is on PATH in `~/.zshrc`.) |
+| `claude`: *"native binary not installed"* | The npm wrapper's postinstall (which downloads the native binary) was skipped by mise's default `--ignore-scripts` | The pin sets `npm_args = "--ignore-scripts=false"`; force a clean reinstall — `mise uninstall npm:@anthropic-ai/claude-code@<ver> && mise install` |
+| `claude`: `Not logged in` right after a **version bump** (attended GUI) | Keychain ACLs are per-binary; the new mise install path is a *new* binary needing fresh approval | Click **Always Allow** once on the "claude wants to use confidential information" prompt on that machine; or adopt `claude setup-token` + `CLAUDE_CODE_OAUTH_TOKEN` |
 | Codex works, but the repo's `CODEX_HOME` has no session | The symlink step ran **before** `codex login` and silently skipped | Re-run `mise run init` (or `ln -s ~/.codex/auth.json <repo-root>/.config/codex/auth.json`) **after** `~/.codex/auth.json` exists |
 | "It works" but you can't tell it used the gateway | Ran the CLI from outside the repo / mise env not populated → it talks **direct** to the provider | Run from the repo root; confirm via a Langfuse trace or `/status` base URL `192.168.105.200:4000` |
 | Tempted to `curl` the gateway to "test" a model | curl cannot reproduce the CLI OAuth session — the result is meaningless | Test with the real `claude` / `codex` CLI only (see [`CLAUDE.md`](../CLAUDE.md)) |
