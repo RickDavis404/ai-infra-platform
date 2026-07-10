@@ -42,6 +42,13 @@ readonly DATA_NS="langfuse-data"
 CANARY_TAG="ha-recov-$(date +%s)"
 readonly CANARY_TAG
 FP_PG=""
+# CNPG bootstraps this cluster's application DB under a non-default name
+# (spec.bootstrap.initdb.database); resolve it once, lazily, instead of assuming `app`.
+CANARY_DB=""
+canary_db() {
+  [[ -n "${CANARY_DB}" ]] || CANARY_DB="$(cnpg_app_db "${DATA_NS}" langfuse-pg)"
+  printf '%s\n' "${CANARY_DB}"
+}
 
 guard() {
   if [[ "${AI_INFRA_ALLOW_DESTRUCTIVE:-0}" != "1" ]]; then
@@ -61,12 +68,12 @@ canary_write_pg() {
   [[ -n "${primary}" ]] || die "no langfuse-pg primary to seed canary"
   info "seeding Postgres canary ${CANARY_TAG} before recovery"
   kc -n "${DATA_NS}" exec "${primary}" -c postgres -- \
-    psql -At -d app -c \
+    psql -At -d "$(canary_db)" -c \
     "CREATE TABLE IF NOT EXISTS ha_canary(tag text primary key, ts timestamptz default now());
      INSERT INTO ha_canary(tag) VALUES ('${CANARY_TAG}') ON CONFLICT DO NOTHING;" >/dev/null ||
     die "Postgres canary write failed"
   FP_PG="$(kc -n "${DATA_NS}" exec "${primary}" -c postgres -- \
-    psql -At -d app -c "SELECT md5(string_agg(tag,'')) FROM ha_canary;" 2>/dev/null || echo '')"
+    psql -At -d "$(canary_db)" -c "SELECT md5(string_agg(tag,'')) FROM ha_canary;" 2>/dev/null || echo '')"
 }
 
 verify_pg() {
@@ -74,7 +81,7 @@ verify_pg() {
   primary="$(pg_primary)"
   [[ -n "${primary}" ]] || die "no langfuse-pg primary after recovery"
   fp="$(kc -n "${DATA_NS}" exec "${primary}" -c postgres -- \
-    psql -At -d app -c "SELECT md5(string_agg(tag,'')) FROM ha_canary;" 2>/dev/null || echo '')"
+    psql -At -d "$(canary_db)" -c "SELECT md5(string_agg(tag,'')) FROM ha_canary;" 2>/dev/null || echo '')"
   if [[ "${fp}" == "${FP_PG}" ]]; then
     info "Postgres canary fingerprint matches after recovery"
   else
@@ -87,7 +94,7 @@ cleanup_pg() {
   primary="$(pg_primary)"
   [[ -n "${primary}" ]] || return 0
   kc -n "${DATA_NS}" exec "${primary}" -c postgres -- \
-    psql -At -d app -c "DELETE FROM ha_canary WHERE tag='${CANARY_TAG}';" >/dev/null 2>&1 || true
+    psql -At -d "$(canary_db)" -c "DELETE FROM ha_canary WHERE tag='${CANARY_TAG}';" >/dev/null 2>&1 || true
 }
 
 node_is_running() {

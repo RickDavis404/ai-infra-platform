@@ -455,13 +455,31 @@ fnox_decrypt() {
     die "fnox_decrypt: missing secret key argument"
   fi
   local age_key_file="${FNOX_AGE_KEY_FILE:-$(repo_root)/secrets/age/key.txt}"
+  # `fnox get` resolves fnox.toml by walking up from CWD, so a caller invoked from a
+  # temp dir OUTSIDE the repo (codex smoke + verify-gateway both `cd` to a mktemp
+  # workdir before running the codex wrapper) fails with "No configuration file
+  # found". Pin the config path to the repo copy rather than depending on CWD.
+  local fnox_config
+  fnox_config="$(repo_root)/fnox.toml"
   if [[ -f "${age_key_file}" ]]; then
-    if ! FNOX_AGE_KEY_FILE="${age_key_file}" fnox get "${key}" </dev/null; then
+    if ! FNOX_AGE_KEY_FILE="${age_key_file}" fnox get --config "${fnox_config}" "${key}" </dev/null; then
       die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
     fi
-  elif ! fnox get "${key}" </dev/null; then
+  elif ! fnox get --config "${fnox_config}" "${key}" </dev/null; then
     die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
   fi
+}
+
+# --- CNPG application-database name -------------------------------------------
+# cnpg_app_db <namespace> <cluster> - print the application database name the CNPG
+# cluster bootstraps. CNPG's own default is `app`, but this platform's langfuse
+# cluster overrides it (spec.bootstrap.initdb.database), so callers that hardcode
+# `psql -d app` fail with `database "app" does not exist`. Read it from the CR.
+cnpg_app_db() {
+  local ns="$1" cluster="$2" db
+  db="$(kc -n "${ns}" get cluster "${cluster}" \
+    -o jsonpath='{.spec.bootstrap.initdb.database}' 2>/dev/null || echo '')"
+  printf '%s\n' "${db:-app}"
 }
 
 : "${_AI_INFRA_COMMON_SH_SOURCED}"

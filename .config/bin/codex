@@ -59,7 +59,6 @@ exec "${real_codex}" \
   --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
   --config "mcp_servers.grafana.env.GRAFANA_USERNAME=\"${GRAFANA_USERNAME}\"" \
   --config "mcp_servers.grafana.env.GRAFANA_PASSWORD=\"${GRAFANA_PASSWORD}\"" \
-  --config 'mcp_servers.langfuse.enabled=false' \
   --config "mcp_servers.langfuse_http.url=\"http://${AI_INFRA_LANGFUSE_VIP:-192.168.105.201}:3000/api/public/mcp\"" \
   --config 'mcp_servers.langfuse_http.env_http_headers={ Authorization = "LANGFUSE_MCP_AUTH_HEADER" }' \
   "$@"
