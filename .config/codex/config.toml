@@ -32,4 +32,4 @@ env_http_headers = { "X-Litellm-Api-Key" = "CODEX_LITELLM_AUTH_HEADER" }
 # model_catalog_json: pinning the bundled catalog here is a live-test open question
 # (whether bare codex needs it to resolve gpt-5.5 through the gateway). Left commented
 # until verified on the mini; the pinned file ships alongside this config:
-# model_catalog_json = "model-catalog-codex-defaults-0.142.5.json"
+# model_catalog_json = "model-catalog-codex-defaults-0.144.0.json"

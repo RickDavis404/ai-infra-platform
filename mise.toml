@@ -11,6 +11,12 @@
 
 [settings]
 lockfile = true
+# npm:@openai/codex is pinned to a release published the same day (see [tools]); it is
+# younger than a global `minimum_release_age` gate a remote box may set, which would make
+# `mise install` refuse to resolve it. Exclude just that tool from the age gate so the
+# committed config reproduces on every machine WITHOUT any env var. (No-op when no gate is
+# configured; the exclude key is the documented remedy — `mise settings minimum_release_age_excludes`.)
+minimum_release_age_excludes = ["npm:@openai/codex"]
 
 [tools]
 # --- Secrets toolchain ---
@@ -63,6 +69,11 @@ ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bit
 # Chrome mermaid-cli needs (puppeteer is a peer dep + npm --ignore-scripts), so a
 # one-time `mise run tools:mmdc-setup` is still required. See that task.
 "npm:@mermaid-js/mermaid-cli" = "11.16.0"
+
+# --- Coding agent CLI (npm backend) ---
+# codex CLI, mise-managed via the npm backend (the aqua registry backend for codex lags
+# upstream releases; converge to a bare aqua codex pin later).
+"npm:@openai/codex" = "0.144.0"
 
 # --- Host model-serving proxy (github backend) ---
 # llama-swap — the on-demand model front (:38080) that JIT-launches llama-server /

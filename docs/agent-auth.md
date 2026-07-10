@@ -8,28 +8,35 @@ verifying that their requests route through the gateway. It is the companion to
 *configuration*) and to the repo-root [`CLAUDE.md`](../CLAUDE.md) hard rule on
 testing subscription models.
 
-> **The repo does not install or authenticate these CLIs.** `claude` and `codex`
-> live on the base login PATH and are authenticated **out-of-band, per machine,
-> with subscription OAuth only — never an API key.** Every additional MacBook in
-> the fleet repeats the steps below; nothing here is shared or portable between
-> machines.
+> **The repo installs Codex (mise-managed) but authenticates neither CLI.** Codex
+> now arrives via the `npm:@openai/codex` pin in `mise.toml`; Claude Code is still
+> installed out-of-band on the login PATH. Both are authenticated **out-of-band, per
+> machine, with subscription OAuth only — never an API key.** Every additional MacBook
+> in the fleet repeats the auth steps below; the OAuth session is not shared or
+> portable between machines.
 
-## 1. Install the CLIs (mise-independent)
+## 1. Install the CLIs
 
-Install both agents on the **host login PATH**, independent of mise. **Do not**
-`npm install -g` either CLI — a global npm install entangles the mise-pinned
-`node` toolchain and drifts when that pin moves.
+**Codex is mise-managed in-repo** — an `npm:@openai/codex` backend pin in `mise.toml`,
+so a plain `mise install` (part of the normal bootstrap) provides it. Do **not**
+`brew install --cask codex` or `npm install -g @openai/codex`: both drift from the
+pinned version, and a global npm install entangles the mise-pinned `node` toolchain.
+
+**Claude Code** is still installed on the **host login PATH, independent of mise**
+(do **not** `npm install -g` it either — same `node` entanglement):
 
 | Agent | Install command | Lands in |
 |---|---|---|
-| **Codex** | `brew install --cask codex` | `/opt/homebrew/bin` (already on PATH) |
+| **Codex** | `mise install` (resolves the `npm:@openai/codex` pin in `mise.toml`) | mise shim, on PATH inside the repo |
 | **Claude Code** | `curl -fsSL https://claude.ai/install.sh \| bash` | native arm64 build → `~/.local/bin` |
 
 Ensure **`~/.local/bin` is on PATH** for the Claude install (add it in `~/.zshrc`
-before the mise activation line if it is not already there). Confirm both resolve:
+before the mise activation line if it is not already there). Confirm both resolve —
+Codex through mise (its shim is on PATH only inside the repo):
 
 ```sh
-command -v codex claude
+command -v claude
+mise --cd <repo-root> which codex
 ```
 
 ## 2. Authenticate (subscription OAuth, from outside the repo)
@@ -41,9 +48,13 @@ authenticate via `mise exec` / `mise run` or from inside the repo tree.
 
 ### Codex (ChatGPT) — file-based, headless-OK
 
+Codex is a mise shim (on PATH only inside the repo), but you must log in from
+**outside** the repo so `CODEX_HOME` stays the real `~/.codex`. Resolve the
+mise-managed binary by path while your cwd is `~`:
+
 ```sh
-cd ~            # outside the repo
-codex login     # opens ChatGPT subscription OAuth in the browser
+cd ~            # outside the repo, so CODEX_HOME stays ~/.codex
+"$(mise --cd <repo-root> which codex)" login   # ChatGPT subscription OAuth in the browser
 ```
 
 This writes the OAuth session to the **file** `~/.codex/auth.json`, which works
@@ -125,7 +136,7 @@ For the fuller interactive routing test (`mise run codex:launch`, and running
 | Symptom | Cause | Fix |
 |---|---|---|
 | `claude`: `Not logged in · Please run /login` (even after logging in) | Running over headless ssh: the keychain is locked in this session, or the keychain ACL prompt was never approved | Use an **attended GUI Terminal**; unlock the login keychain in that GUI session; click **Always Allow** on the "claude wants to use confidential information" prompt |
-| `command not found: claude` / `codex` | Install dir not on PATH | Ensure `~/.local/bin` (Claude) and `/opt/homebrew/bin` (Codex) are on PATH in `~/.zshrc`; re-open the shell |
+| `command not found: claude` / `codex` | Install dir not on PATH | Claude: ensure `~/.local/bin` is on PATH in `~/.zshrc`, re-open the shell. Codex: it is a mise shim on PATH only inside the repo — run it from the repo, or resolve it with `mise --cd <repo-root> which codex` |
 | Codex works, but the repo's `CODEX_HOME` has no session | The symlink step ran **before** `codex login` and silently skipped | Re-run `mise run init` (or `ln -s ~/.codex/auth.json <repo-root>/.config/codex/auth.json`) **after** `~/.codex/auth.json` exists |
 | "It works" but you can't tell it used the gateway | Ran the CLI from outside the repo / mise env not populated → it talks **direct** to the provider | Run from the repo root; confirm via a Langfuse trace or `/status` base URL `192.168.105.200:4000` |
 | Tempted to `curl` the gateway to "test" a model | curl cannot reproduce the CLI OAuth session — the result is meaningless | Test with the real `claude` / `codex` CLI only (see [`CLAUDE.md`](../CLAUDE.md)) |
