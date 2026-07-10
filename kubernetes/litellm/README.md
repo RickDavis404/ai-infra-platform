@@ -19,8 +19,9 @@ this platform forbids. Instead:
   (`postgres:18-alpine`) to run `pg_isready` before the gateway boots. The
   forbidden legacy-vendor init image from the source is explicitly replaced.
 
-The container image is pinned to `ghcr.io/berriai/litellm-database:v1.90.0` (the
-`-database` variant bakes in Prisma/Postgres support for `store_model_in_db`).
+The container image is pinned (by tag **and** sha256 digest in `deployment.yaml`) to
+`ghcr.io/berriai/litellm-database:v1.92.0-rc.2` (the `-database` variant bakes in
+Prisma/Postgres support for `store_model_in_db`).
 Re-verify the digest at deploy time and pin/verify by digest in CI. The PyPI
 releases `1.82.7` / `1.82.8` were flagged for a supply-chain incident and MUST be
 avoided; the platform consumes LiteLLM only via this vetted container image and
@@ -34,7 +35,7 @@ never `pip install`s it at runtime.
 | `deployment.yaml`       | 2 replicas, RollingUpdate `maxUnavailable:0`, anti-affinity, probes, init wait-for-postgres. |
 | `service.yaml`          | LoadBalancer VIP `192.168.105.200:4000` (Cilium L2, port `http`) + Prometheus scrape annotations. |
 | `proxy-config.yaml`     | ConfigMap `litellm-config` → `proxy_config.yaml` (general/litellm settings + model_list). |
-| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (structured uvicorn access logs). |
+| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (§8a structured uvicorn access logs + §8b ChatGPT client-OAuth passthrough patch). |
 | `pdb.yaml`              | PodDisruptionBudget `minAvailable: 1`. |
 | `keys/`                 | Virtual-key provisioning base (separate apply; see below). |
 
@@ -71,10 +72,11 @@ Two-level credential model:
   distinct secret class from the `fnox`/`age` set and are NOT produced by kustomize.
 
 Proxy auth uses the DEFAULT `x-litellm-api-key` header. A custom
-`litellm_key_header_name` is deliberately NOT set: v1.90.0 hardcodes
-`x-litellm-api-key` when deciding which header authenticated the proxy and then
-refuses to forward that header, so authenticating with the default name lets the
-client's `Authorization` (subscription OAuth) survive forwarding to the upstream.
+`litellm_key_header_name` is deliberately NOT set: the litellm-database image tag
+pinned in `deployment.yaml` hardcodes `x-litellm-api-key` when deciding which header
+authenticated the proxy and then refuses to forward that header, so authenticating
+with the default name lets the client's `Authorization` (subscription OAuth) survive
+forwarding to the upstream.
 
 No `ANTHROPIC_API_KEY` is set anywhere — not even as an empty literal. A configured
 key would force the anthropic provider down the `x-api-key` path and break OAuth
@@ -103,7 +105,7 @@ Order within `keys/` (enforced by initContainers, not kustomize):
 | Alias | Team | Used by | Scope |
 |---|---|---|---|
 | `claude-code` | `agents`  | Claude Code Max client (proxy auth) | `claude-*` + local routes |
-| `codex`       | `agents`  | Codex client (proxy auth)           | `gpt-5.3-codex`, `gpt-5.4`, `gpt-5.5` + local routes |
+| `codex`       | `agents`  | Codex client (proxy auth)           | `gpt-*` wildcard (with explicit `gpt-5.3-codex` → `gpt-5.3-codex-spark` slug rewrite) + local routes |
 | `smoke-test`  | `service` | §15 smoke/validation harness        | local routes only |
 
 The Jobs run under the `litellm-key-provisioner` ServiceAccount, scoped to
@@ -162,11 +164,17 @@ When keys are out of sync (consumers 401, table wiped, or a forced rotation):
 - OTLP/HTTP traces/metrics/logs are exported to the in-cluster OTel Collector in the
   `lgtm` plane on plain `:4318` with `/v1/{traces,metrics,logs}` paths.
 
-## Experimental, examples-only (NOT in this live config)
+## ChatGPT passthrough (shipped) + examples-only exclusions
 
-The `sitecustomize.py` here ships ONLY the structured-access-log responsibility
-(§8a). The ChatGPT per-request client-OAuth passthrough monkeypatch (§8b) is
-experimental, version-coupled to the chatgpt-provider internals, and is documented
-as an opt-in example elsewhere — it is intentionally absent here. Also excluded from
-the live `proxy_config.yaml`: BYOK hosted-provider routes, vector-store registry,
-the MCP-servers gateway, and the bake-off virtual-key fan-out.
+The `sitecustomize.py` here ships BOTH responsibilities: the structured-access-log
+rewrite (§8a) AND the ChatGPT per-request client-OAuth passthrough monkeypatch (§8b).
+The §8b patch IS live in this config (mounted via `pylogging-config.yaml`, loaded on
+`PYTHONPATH`): it is experimental and version-coupled to the chatgpt-provider
+internals, but wholly best-effort — every import/override is guarded so a future
+image bump can never block or crash proxy startup — and default-on (opt out with
+`CHATGPT_PASSTHROUGH_PATCH=0`). It makes the `gpt-*` / `gpt-5.3-codex` routes reuse
+the Codex-forwarded ChatGPT subscription OAuth (`Authorization: Bearer` +
+`chatgpt-account-id`) instead of running a blocking device-flow at model-load, so the
+routes load hands-off on a headless cluster. Still excluded from the live
+`proxy_config.yaml`: BYOK hosted-provider routes, vector-store registry, the
+MCP-servers gateway, and the bake-off virtual-key fan-out.
