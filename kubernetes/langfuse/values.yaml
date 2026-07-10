@@ -194,11 +194,16 @@ langfuse:
       value: "true"
     # --- Langfuse V4 Fast Preview: `dual` keeps legacy tables populated so the LiteLLM
     # Langfuse SDK-v2 callback keeps writing; opt-in exposes the MCP observation/metrics
-    # tools + /api/public/v2 APIs. PREREQUISITE (NOT auto-migrated): the ClickHouse events
-    # schema (events_core/events_full/observations_batch_staging + MV) must be created
-    # manually (langfuse discussion #14157, adapted ON CLUSTER 'default' +
-    # ReplicatedReplacingMergeTree) or preview reads return empty. NEVER set
-    # events_only (it 400s the LiteLLM generation-create ingestion path).
+    # tools + /api/public/v2 APIs. PREREQUISITE (NOT auto-migrated by langfuse): the
+    # ClickHouse events schema (observations_batch_staging/events_full/events_core +
+    # events_core_mv) is created as IaC by the langfuse-ch-events-schema Job in
+    # kubernetes/langfuse-data/clickhouse/ (authoritative v3.210.0 dev-tables.sh DDL,
+    # adapted ON CLUSTER 'default' + ReplicatedReplacingMergeTree; langfuse discussion
+    # #14157) — no longer hand-run. Events populate from Job-apply time FORWARD via the
+    # worker's EventPropagationQueue (anti-joins events_core over completed staging
+    # partitions) with a ~10-min propagation lag; there is NO historic backfill, so
+    # preview reads over pre-existing traces stay empty until new traffic flows. NEVER
+    # set events_only (it 400s the LiteLLM generation-create ingestion path).
     # LANGFUSE_MIGRATION_V4_NATIVE_OTEL_BEHAVIOUR intentionally UNSET (default dual_write).
     - name: LANGFUSE_MIGRATION_V4_WRITE_MODE
       value: "dual"

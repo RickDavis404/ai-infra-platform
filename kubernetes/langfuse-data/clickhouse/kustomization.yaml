@@ -5,8 +5,16 @@ kind: Kustomization
 # Altinity CRs (CHK + CHI) reconciled by the operator installed in
 # `kubernetes/operators/clickhouse-operator/`. Apply Keeper first so its quorum
 # Service exists before the CHI references it via spec.configuration.zookeeper.
+#
+# events-schema-job.yaml ships the Langfuse V4 events schema (observations_batch_
+# staging / events_full / events_core / events_core_mv) as an idempotent migration
+# Job — those tables are excluded from langfuse's production CH migrations, so
+# LANGFUSE_MIGRATION_V4_WRITE_MODE=dual would otherwise storm errors. The Job
+# self-gates on the CHI becoming reachable, so co-locating it here (applied with the
+# CHI, before apply.sh's CHI-Completed wait) is safe. See that file's header.
 namespace: langfuse-data
 
 resources:
 - keeper.yaml
 - chi.yaml
+- events-schema-job.yaml
