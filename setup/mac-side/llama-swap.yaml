@@ -55,6 +55,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_DEFAULT_CHAT_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
@@ -75,6 +76,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_LLAMA32_1B_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
@@ -84,6 +86,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_GRANITE41_3B_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
@@ -93,6 +96,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_NEMOTRON3_NANO_4B_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
@@ -103,6 +107,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_GEMMA4_E2B_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
@@ -113,6 +118,7 @@ models:
     cmd: |
       ${llama-server-stub}
       --model ${env.AI_INFRA_QWEN35_4B_Q4KS_MODEL_PATH}
+      --ctx-size 32768
       --port ${PORT}
     ttl: 600
 
