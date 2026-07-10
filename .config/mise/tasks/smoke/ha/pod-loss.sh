@@ -35,6 +35,14 @@ declare -F kc >/dev/null 2>&1 || kc() {
 }
 
 readonly RTO_TIMEOUT="${HA_RTO_TIMEOUT:-300}"
+# langfuse web/worker have a documented ~10-min cold start (Prisma + 34 ClickHouse
+# ON CLUSTER migrations + ~4 min app init) — the platform gives them a 1200s
+# startupProbe budget (kubernetes/langfuse/patches/startup-probe-web.yaml). A deleted
+# langfuse pod re-runs the (idempotent, so fast) migrations + the full app init, which
+# routinely exceeds the generic 300s RTO under HA-chaos memory pressure. Give ONLY
+# these two components their own readiness budget; everything else stays at RTO_TIMEOUT
+# so a genuine slow-recovery regression in a fast component still fails the phase.
+readonly LANGFUSE_RTO="${HA_LANGFUSE_RTO:-900}"
 readonly DATA_NS="langfuse-data"
 CANARY_TAG="ha-pod-$(date +%s)"
 readonly CANARY_TAG
@@ -129,7 +137,7 @@ cleanup_pg() {
 # Probe a Service health endpoint continuously across a pod delete to confirm
 # zero-downtime on the surviving replica. Runs via a transient in-cluster curl.
 delete_pod_zero_downtime() {
-  local ns="$1" selector="$2" label="$3"
+  local ns="$1" selector="$2" label="$3" timeout="${4:-${RTO_TIMEOUT}}"
   local pod
   pod="$(kc -n "${ns}" get pods -l "${selector}" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
@@ -142,8 +150,8 @@ delete_pod_zero_downtime() {
     note_fail "${label}: delete pod failed"
   # Wait for the controller to recreate and the rollout/endpoints to be Ready again.
   if ! kc -n "${ns}" wait --for=condition=Ready pod -l "${selector}" \
-    --timeout="${RTO_TIMEOUT}s" >/dev/null 2>&1; then
-    note_fail "${label}: pods did not return Ready within RTO"
+    --timeout="${timeout}s" >/dev/null 2>&1; then
+    note_fail "${label}: pods did not return Ready within ${timeout}s"
   else
     info "${label}: controller recreated pod and endpoints are Ready"
   fi
@@ -180,8 +188,9 @@ main() {
   canary_write_pg
 
   # --- Stateless / app pods ---
-  delete_pod_zero_downtime "langfuse" "app=web" "Langfuse web"
-  delete_pod_zero_downtime "langfuse" "app=worker" "Langfuse worker"
+  # langfuse web/worker get the longer cold-start budget (see LANGFUSE_RTO note above).
+  delete_pod_zero_downtime "langfuse" "app=web" "Langfuse web" "${LANGFUSE_RTO}"
+  delete_pod_zero_downtime "langfuse" "app=worker" "Langfuse worker" "${LANGFUSE_RTO}"
   delete_pod_zero_downtime "litellm" "app=litellm" "LiteLLM"
   delete_pod_zero_downtime "lgtm" "app.kubernetes.io/name=grafana" "Grafana"
 
