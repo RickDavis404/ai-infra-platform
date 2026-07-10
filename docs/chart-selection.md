@@ -19,29 +19,29 @@ not what an upstream chart merely declares for an unused option.
 
 | Component | Chart / artifact | Repository of record | Pinned chart version | App / image version | Why this source |
 |---|---|---|---|---|---|
-| Cilium CNI | `cilium` | `https://helm.cilium.io/` | 1.20.0-pre.3 | 1.20.0-pre.3 | CNCF in-tree CNI; no subcharts; excellent release cadence |
+| Cilium CNI | `cilium` | `https://helm.cilium.io/` | 1.20.0-pre.4 | 1.20.0-pre.4 | CNCF in-tree CNI; no subcharts; excellent release cadence |
 | CloudNativePG operator | `cloudnative-pg` | `https://cloudnative-pg.github.io/charts` | 0.29.0 | 1.30.0 (Postgres 18) | CNCF Sandbox, project-official operator; no Bitnami in path |
 | Postgres (DB) | CNPG `Cluster` CR | n/a — operator-managed (no chart) | — | Postgres 18 | operator-managed; no bundled image |
-| Altinity ClickHouse operator | `altinity-clickhouse-operator` | `https://helm.altinity.com` | 0.27.1 | 0.27.1 (ClickHouse 25.8 LTS) | vendor-official; chart's `crdHook.image` default is overridden (see §3) |
-| ClickHouse (DB) | Altinity `ClickHouseInstallation` / `ClickHouseKeeperInstallation` CRs | n/a — operator-managed | — | ClickHouse 25.8 LTS | operator-managed; no bundled image |
+| Altinity ClickHouse operator | `altinity-clickhouse-operator` | `https://helm.altinity.com` | 0.27.1 | 0.27.1 (operator only; CHI/CHK server images pinned independently) | vendor-official; chart's `crdHook.image` default is overridden (see §3) |
+| ClickHouse (DB) | Altinity `ClickHouseInstallation` / `ClickHouseKeeperInstallation` CRs | n/a — operator-managed | — | ClickHouse 26.3.17.4 (26.3 LTS) | operator-managed; no bundled image |
 | Valkey | `valkey` (valkey-io / valkey-helm) | `https://valkey.io/valkey-helm` | 0.10.0 | 9.1.0 | Valkey-project community chart — the correct Bitnami-Redis replacement; no `dependencies:` block |
-| SeaweedFS (S3) | `seaweedfs` | `https://seaweedfs.github.io/seaweedfs/helm` | 4.37 | 4.37 | project-official, in-monorepo; no Bitnami |
-| Langfuse (web + worker) | `langfuse` | `https://github.com/langfuse/langfuse-k8s` | 1.5.37 | 3.201.1 | vendor-official; all bundled subcharts `deploy: false` (see §2) |
-| LiteLLM gateway | **RAW manifests** (image only) | image registry only — chart NOT used | — | `ghcr.io/berriai/litellm-database:v1.90.0` | official chart carries Bitnami pg/redis; raw manifests avoid it (see §4) |
-| Grafana | `grafana` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 12.7.1 | 13.1.0 | community-maintained, Grafana-endorsed fork (see §5) |
-| Loki | `loki` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 18.3.0 | 3.7.x | community OSS fork; bundled MinIO is official `charts.min.io`, disabled |
+| SeaweedFS (S3) | `seaweedfs` | `https://seaweedfs.github.io/seaweedfs/helm` | 4.39.0 | 4.39 | project-official, in-monorepo; no Bitnami |
+| Langfuse (web + worker) | `langfuse` | `https://github.com/langfuse/langfuse-k8s` | 1.5.38 | 3.205.1 (image overridden to 3.210.0) | vendor-official; all bundled subcharts `deploy: false` (see §2) |
+| LiteLLM gateway | **RAW manifests** (image only) | image registry only — chart NOT used | — | `ghcr.io/berriai/litellm-database:v1.92.0-rc.2` | official chart carries Bitnami pg/redis; raw manifests avoid it (see §4) |
+| Grafana | `grafana` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 12.7.2 | 13.1.0 | community-maintained, Grafana-endorsed fork (see §5) |
+| Loki | `loki` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 18.4.3 | 3.7.x | community OSS fork; bundled MinIO is official `charts.min.io`, disabled |
 | Tempo (single-binary) | `tempo` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 2.2.3 | 2.10.x | community OSS fork; bundled MinIO disabled |
 | Tempo (distributed — HA option) | `tempo-distributed` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 2.25.4 | 2.10.x | pre-pinned HA option, gated behind §7.2 escalation (not deployed in v1) |
-| Prometheus | `prometheus` (standalone) | `https://prometheus-community.github.io/helm-charts` | 29.13.1 | — | Prometheus Community / CNCF; standalone over kube-prometheus-stack (see §6) |
-| OpenTelemetry Collector | `opentelemetry-collector` | `https://open-telemetry.github.io/opentelemetry-helm-charts` | 0.159.2 | 0.155.0 | CNCF first-party; no subcharts |
+| Prometheus | `prometheus` (standalone) | `https://prometheus-community.github.io/helm-charts` | 29.14.0 | — | Prometheus Community / CNCF; standalone over kube-prometheus-stack (see §6) |
+| OpenTelemetry Collector | `opentelemetry-collector` | `https://open-telemetry.github.io/opentelemetry-helm-charts` | 0.164.1 | 0.156.0 | CNCF first-party; no subcharts |
 | Grafana Alloy | `alloy` (from `grafana/alloy`) | `https://grafana.github.io/helm-charts` | 1.10.0 | v1.17.1 | Grafana Labs first-party; published from the Alloy repo (NOT grafana-community) |
 
-Operator tooling and CLIs are pinned separately in `.config/mise/conf.d/00-tools.toml` `[tools]`
-(age, fnox, kubectl 1.36.2, kustomize 5.7.1, helm 3.19.0, cilium-cli 0.18.8, plus
+Operator tooling and CLIs are pinned separately in the root `mise.toml` `[tools]`
+(age, fnox, kubectl 1.36.2, kustomize 5.8.1, helm 4.2.3, cilium-cli 0.19.5, plus
 node/python/ripgrep + `npm:@mermaid-js/mermaid-cli` for the docs toolchain and the
 lint/format set). The kubeadm Kubernetes version is pinned in the Lima
 `k8s-cilium` template, identical on all three control-plane nodes; **kube-vip** is
-`ghcr.io/kube-vip/kube-vip:v1.2.0`. See [`developer-workflows.md`](developer-workflows.md)
+`ghcr.io/kube-vip/kube-vip:v1.2.1`. See [`developer-workflows.md`](developer-workflows.md)
 for the file-task surface.
 
 ## 2. No-Bitnami posture
@@ -86,7 +86,7 @@ LiteLLM is the **single component deployed as raw Kubernetes manifests** (Deploy
 + Service + ConfigMaps + key-mint Jobs), not via the official Helm chart, because
 that chart bundles Bitnami Postgres/Redis. The raw-manifest path:
 
-- uses the `-database` image variant (`ghcr.io/berriai/litellm-database:v1.90.0`,
+- uses the `-database` image variant (`ghcr.io/berriai/litellm-database:v1.92.0-rc.2`,
   which bakes in Prisma/Postgres for `store_model_in_db`), pinned exactly;
 - connects to the dedicated CNPG cluster `litellm-pg` (reached as `litellm-pg-rw`)
   via the CNPG-minted `uri` Secret;
@@ -114,7 +114,7 @@ attempt to pull Alloy from `grafana-community`.
 
 ## 6. Why standalone Prometheus (not kube-prometheus-stack)
 
-The platform uses the standalone `prometheus-community/prometheus` chart (29.13.1),
+The platform uses the standalone `prometheus-community/prometheus` chart (29.14.0),
 deliberately chosen over `kube-prometheus-stack`. The standalone chart matches the
 hand-tuned scrape-config investment — the `/prometheus` route-prefix, the static
 `extraScrapeConfigs`, and the OTLP remote-write receiver. `kube-prometheus-stack`

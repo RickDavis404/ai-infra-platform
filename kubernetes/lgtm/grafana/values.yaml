@@ -1,5 +1,5 @@
 # PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
-# grafana/grafana 12.7.1 (grafana-community.github.io/helm-charts)
+# grafana/grafana 12.7.2 (grafana-community.github.io/helm-charts)
 # UI + datasource/dashboard provisioning. Login-required (no anonymous access).
 # 2 replicas, headless service for unified-alerting HA gossip, CNPG-backed DB.
 # HA DEFAULT: replicas 2 (the AI_INFRA_PROFILE=lean overlay patches this to 1 — see

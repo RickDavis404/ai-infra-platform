@@ -31,14 +31,14 @@ the charts to apply and for Alloy to discover them.
 
 The two CRD YAMLs under `crds/` are vendored **verbatim** from
 [`prometheus-operator/prometheus-operator`](https://github.com/prometheus-operator/prometheus-operator)
-at tag **`v0.81.0`**:
+at tag **`v0.92.1`**:
 
 ```
 example/prometheus-operator-crd/monitoring.coreos.com_servicemonitors.yaml
 example/prometheus-operator-crd/monitoring.coreos.com_podmonitors.yaml
 ```
 
-The pin (`v0.81.0`) is recorded here — this README is the provenance record for the
+The pin (`v0.92.1`) is recorded here — this README is the provenance record for the
 vendored CRDs (they are plain manifests, not a `helmCharts:` entry). Bumping the
 version means re-fetching both files at the new tag.
 

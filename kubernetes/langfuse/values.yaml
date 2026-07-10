@@ -1,5 +1,5 @@
 # PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
-# values.yaml — chart langfuse/langfuse 1.5.37 (pinned in kustomization.yaml)
+# values.yaml — chart langfuse/langfuse 1.5.38 (pinned in kustomization.yaml)
 #
 # Langfuse v3 split architecture: langfuse-web (Next.js UI + API/ingestion) and
 # langfuse-worker (async queue consumer -> ClickHouse + S3). All four bundled data
@@ -22,13 +22,13 @@ langfuse:
   # The chart DEFAULTS langfuse.image.pullPolicy to `Always`, so every idempotent
   # re-apply re-pulls langfuse/langfuse + langfuse/langfuse-worker (both Docker Hub
   # images) and trips docker.io's anonymous pull-rate limit (HTTP 429). The image is
-  # pinned to an exact tag (appVersion 3.201.x), so IfNotPresent is safe — the web
+  # pinned to an exact tag (appVersion 3.205.x), so IfNotPresent is safe — the web
   # and worker templates both fall back to this via
   # `langfuse.web/worker.image.pullPolicy | default langfuse.image.pullPolicy`.
   image:
     pullPolicy: IfNotPresent
-    # Runs ahead of chart appVersion 3.201.1 (user-approved 2026-07-02); REMOVE when chart 1.5.38+ bundles >=3.203.x.
-    tag: "3.203.3"
+    # Runs ahead of chart 1.5.38 appVersion 3.205.1 (KEEP override; user-approved); REMOVE when a chart bundles >=3.210.x.
+    tag: "3.210.0"
   logging:
     level: info
     # format sets LANGFUSE_LOG_FORMAT via the chart serverEnv helper. Set it HERE,

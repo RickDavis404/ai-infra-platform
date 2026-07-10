@@ -1,6 +1,6 @@
 # LoadBalancer hardening patch (strategic merge) for the langfuse-web Service.
 #
-# The pinned chart (1.5.37) web service template renders only `type` and
+# The pinned chart (1.5.38) web service template renders only `type` and
 # `annotations` from values (templates/web/service.yaml) — it has no field for
 # loadBalancerClass or externalTrafficPolicy. values.yaml already sets
 # langfuse.web.service.type: LoadBalancer + the lbipam.cilium.io/ips annotation;

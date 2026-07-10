@@ -7,7 +7,7 @@
 # first boot takes ~10 min, NOT the ~60-75s an earlier estimate assumed — the budget
 # below is sized to cover it in a single startup window (too small a budget SIGTERMs
 # mid-migration each cycle and `mise run up`'s rollout wait times out first).
-# The pinned chart (1.5.37) templates only a livenessProbe for the worker
+# The pinned chart (1.5.38) templates only a livenessProbe for the worker
 # and has NO startupProbe (verified in charts/.../templates/worker/deployment.yaml).
 # With no startupProbe the livenessProbe probes during migration and SIGTERMs the
 # pod mid-migration, so golang-migrate leaves a "Dirty database" and the worker

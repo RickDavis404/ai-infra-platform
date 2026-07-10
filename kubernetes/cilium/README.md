@@ -13,7 +13,7 @@ ClusterIP/service load-balancing that kube-proxy would otherwise handle.
 |--------------|---------------------------|
 | Chart        | `cilium`                  |
 | Repo         | `https://helm.cilium.io`  |
-| Version      | **`1.20.0-pre.3`** (pinned, pre-release) |
+| Version      | **`1.20.0-pre.4`** (pinned, pre-release) |
 | Release name | `cilium`                  |
 | Namespace    | `kube-system`             |
 | Values       | `values.yaml`             |

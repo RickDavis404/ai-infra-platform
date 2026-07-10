@@ -10,11 +10,11 @@ URL, OTel exporter, and cross-namespace DNS hardcodes `*.lgtm.svc.cluster.local`
 
 | Base | Chart / kind | Pin | Role |
 |---|---|---|---|
-| `otel-collector/` | opentelemetry-collector | 0.159.2 | OTLP gateway (DaemonSet) |
-| `prometheus/` | prometheus (standalone) | 29.13.1 | metrics (server + node-exporter + kube-state-metrics) |
+| `otel-collector/` | opentelemetry-collector | 0.164.1 | OTLP gateway (DaemonSet) |
+| `prometheus/` | prometheus (standalone) | 29.14.0 | metrics (server + node-exporter + kube-state-metrics) |
 | `alloy/` | alloy | 1.10.0 | otel-collector self-log shipper (DaemonSet) |
-| `grafana/` | grafana | 12.7.1 | UI + datasources + dashboards |
-| `loki/` | loki | 18.3.0 | logs (SimpleScalable on SeaweedFS S3) |
+| `grafana/` | grafana | 12.7.2 | UI + datasources + dashboards |
+| `loki/` | loki | 18.4.3 | logs (SimpleScalable on SeaweedFS S3) |
 | `tempo/` | tempo | 2.2.3 | traces (single-binary on SeaweedFS S3) |
 | `dashboards/` | raw ConfigMaps | — | hand-rolled sideloaded dashboards |
 

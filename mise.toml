@@ -22,12 +22,12 @@ minimum_release_age_excludes = ["npm:@openai/codex", "npm:@anthropic-ai/claude-c
 [tools]
 # --- Secrets toolchain ---
 age  = "1.3.1"     # age encryption (fnox backend) — current stable (verified in mise registry)
-fnox = "1.28.0"    # fnox secret resolver — current stable (the prior 0.5.0 pin did not exist)
+fnox = "1.28.0"   # fnox secret resolver — HELD at 1.28.0: v1.29.0/v1.30.0 release attestations are broken/absent on macos-arm64 (TSA verify fails; gh attestation API 404s the 1.30.0 tarball) and mise blocks unattested upgrades of a secret-resolver by design. Re-try on the next upstream release.
 
 # --- Kubernetes client tooling ---
 kubectl      = "1.36.2"
 kustomize    = "5.8.1"
-helm         = "4.2.2"
+helm         = "4.2.3"
 "cilium-cli" = "0.19.5"
 
 # --- Lint / format / scan (also surfaced via pre-commit, §8.2/§8.3) ---
@@ -40,7 +40,7 @@ shfmt      = "3.13.1"
 # tool, not a Homebrew one, or `mise install` aborts hard ("pipx install yamllint...:
 # No such file or directory"). uv is a single static binary (no Python needed for uv
 # itself) and is mise's own recommended remedy for the missing-pipx case.
-uv = "0.11.26"
+uv = "0.11.28"
 # yamllint via the pipx backend (installed by uv, above): it lands yamllint in its own
 # venv WITH its pyyaml dependency, so both the `yamllint` CLI AND validate:yaml's
 # structural PyYAML parse have `yaml` available (mise's default backend pulled the
@@ -64,7 +64,7 @@ gh = "2.96.0"      # GitHub CLI (aqua:cli/cli) — native arm64 asset; used for 
 
 # --- Diagram + docs toolchain (mermaid-cli / design-doc-mermaid skill) ---
 node    = "24"          # mermaid-cli engine (^18.19 || >=20); current LTS Krypton
-python  = "3.13"        # design-doc-mermaid skill utilities (stdlib only)
+python  = "3.14"        # design-doc-mermaid skill utilities (stdlib only)
 ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bitnami
 # mmdc on PATH via the npm backend. NOTE: `mise install` does NOT fetch the headless
 # Chrome mermaid-cli needs (puppeteer is a peer dep + npm --ignore-scripts), so a
@@ -74,7 +74,7 @@ ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bit
 # --- Coding agent CLIs (npm backend) ---
 # codex CLI, mise-managed via the npm backend (the aqua registry backend for codex lags
 # upstream releases; converge to a bare aqua codex pin later).
-"npm:@openai/codex" = "0.144.0"
+"npm:@openai/codex" = "0.144.1"
 # Claude Code CLI, mise-managed via the npm backend; supersedes the native-installer binary
 # (curl https://claude.ai/install.sh) for in-repo use, so the whole agent toolchain is pinned
 # and reproducible. The native installer stays optional for out-of-repo use.
@@ -91,4 +91,4 @@ ripgrep = "15"          # `rg`, used by validate:private-names / validate:no-bit
 # (llama-swap_<ver>_darwin_arm64.tar.gz); mise's github backend strips the `v` from
 # the release tag, so "235" resolves the v235 tag. host:up bakes the resolved binary
 # path into the launchd plist (mise shims are not on launchd's PATH).
-"github:mostlygeek/llama-swap" = "235"
+"github:mostlygeek/llama-swap" = "237"

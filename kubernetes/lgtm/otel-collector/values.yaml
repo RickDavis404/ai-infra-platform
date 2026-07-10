@@ -1,5 +1,5 @@
 # OpenTelemetry Collector — in-cluster OTLP gateway (§13.2.1).
-# Chart: open-telemetry/opentelemetry-collector 0.159.2, releaseName otel-collector,
+# Chart: open-telemetry/opentelemetry-collector 0.164.1, releaseName otel-collector,
 # namespace lgtm. Rendered via `kustomize build --enable-helm`.
 #
 # Role split (§13.2): THIS collector is the single OTLP gateway for every
@@ -15,16 +15,16 @@ mode: daemonset
 # ship in the slimmer `otel/opentelemetry-collector-k8s` image (that image only
 # carries otlp/otlphttp/debug/... exporters, so it fails to start with
 # `exporters unknown type: "prometheusremotewrite"`). The contrib image IS published
-# on Docker Hub at the chart's appVersion (0.155.0 confirmed present), so pin to it.
-# chart 0.159.2's appVersion is only 0.154.0, so an explicit tag is REQUIRED to run
-# the newer 0.155.0 contrib image.
+# on Docker Hub at 0.156.0 (confirmed present), so pin to it. chart 0.164.1's
+# appVersion is only 0.155.0, so an explicit tag is REQUIRED to run the newer
+# 0.156.0 contrib image.
 image:
   repository: otel/opentelemetry-collector-contrib
   pullPolicy: IfNotPresent
-  tag: "0.155.0"
+  tag: "0.156.0"
 
 # Presets wire in the filelog receiver (general container-log tail) and the
-# k8sattributes processor RBAC + plumbing. `includeCollectorLogs: false` — the
+# k8s_attributes processor RBAC + plumbing. `includeCollectorLogs: false` — the
 # collector's own logs go via Alloy (§13.2.3), not back through itself.
 presets:
   logsCollection:
@@ -153,7 +153,7 @@ config:
     batch:
       send_batch_size: 1024
       timeout: 5s
-    k8sattributes:
+    k8s_attributes:
       extract:
         metadata:
         - k8s.namespace.name
@@ -162,7 +162,7 @@ config:
         - k8s.deployment.name
         - k8s.node.name
         - k8s.container.name
-        # `extract_all_pod_labels` is NOT a valid k8sattributes field (it makes the
+        # `extract_all_pod_labels` is NOT a valid k8s_attributes field (it makes the
         # collector fail config validation: `'extract' has invalid keys`). To capture
         # every pod label, use a labels entry with a catch-all key_regex instead.
         labels:
@@ -256,7 +256,7 @@ config:
         exporters: [prometheusremotewrite, debug]
       logs:
         receivers: [otlp, filelog]
-        processors: [memory_limiter, k8sattributes, batch]
+        processors: [memory_limiter, k8s_attributes, batch]
         exporters: [otlphttp/loki, debug]
 
 # Per-node checkpoint PVC for the filelog receiver (local-path).

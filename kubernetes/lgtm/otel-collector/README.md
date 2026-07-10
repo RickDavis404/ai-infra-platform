@@ -10,7 +10,7 @@ nothing else.
 |---|---|
 | Chart | `opentelemetry-collector` |
 | Repo | `https://open-telemetry.github.io/opentelemetry-helm-charts` |
-| Version (pinned) | `0.159.2` |
+| Version (pinned) | `0.164.1` |
 | Release | `otel-collector` |
 | Namespace | `lgtm` |
 | Mode | `daemonset` (one collector per node) |
@@ -23,7 +23,7 @@ Inlined via Helm and rendered with kustomize:
 kustomize build --enable-helm kubernetes/lgtm/otel-collector | kubectl apply -f -
 ```
 
-The pin (`0.159.2`) is exact and does not float. The namespace is `lgtm` (decision
+The pin (`0.164.1`) is exact and does not float. The namespace is `lgtm` (decision
 D001) — every datasource and exporter URL resolves under
 `*.lgtm.svc.cluster.local`.
 

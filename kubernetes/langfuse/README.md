@@ -16,13 +16,13 @@ kustomize `helmCharts:` and rendered with `kustomize build --enable-helm` — ne
 |-------|-------|
 | Chart | `langfuse` |
 | Repo | `https://langfuse.github.io/langfuse-k8s` |
-| Version (pinned exactly) | `1.5.37` |
+| Version (pinned exactly) | `1.5.38` |
 | appVersion | `3.201.1` |
 | releaseName | `langfuse` |
 | Namespace | `langfuse` |
 | Values | `values.yaml` |
 
-The pin does **not** float. Re-verify the chart's values schema against `1.5.37`
+The pin does **not** float. Re-verify the chart's values schema against `1.5.38`
 before any bump (the per-deployment affinity, PDB, and externalized-store keys have
 moved between minor versions upstream).
 
@@ -89,7 +89,7 @@ pointed at the HA stores running in the `langfuse-data` namespace:
 S3 buckets: events `langfuse-events`, batch exports `langfuse-batch-exports`,
 media `langfuse-media`.
 
-**DATABASE wiring.** Chart `1.5.37` configures Postgres through discrete
+**DATABASE wiring.** Chart `1.5.38` configures Postgres through discrete
 `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_USERNAME` / `DATABASE_PASSWORD` /
 `DATABASE_NAME` env (the externalized `postgresql:` block in `values.yaml`), with the
 password resolved from the Secret via `existingSecret`. Where a future chart revision

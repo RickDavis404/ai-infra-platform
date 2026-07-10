@@ -8,7 +8,7 @@ Logs store for the LGTM observability plane. Namespace `lgtm`.
 |---|---|
 | Chart | `loki` |
 | Repo | `https://grafana-community.github.io/helm-charts` |
-| Version (pinned) | `18.3.0` |
+| Version (pinned) | `18.4.3` |
 | Release name | `loki` |
 | Namespace | `lgtm` |
 

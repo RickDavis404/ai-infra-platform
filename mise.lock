@@ -157,43 +157,8 @@ url = "https://github.com/cli/cli/releases/download/v2.96.0/gh_2.96.0_windows_am
 provenance = "github-attestations"
 
 [[tools."github:mostlygeek/llama-swap"]]
-version = "235"
+version = "237"
 backend = "github:mostlygeek/llama-swap"
-
-[tools."github:mostlygeek/llama-swap"."platforms.linux-arm64"]
-checksum = "sha256:2501d3b5bbab316851ef3088e41e74c23ba0c9e811823f0c6b9fc3dd89d9d351"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578717"
-
-[tools."github:mostlygeek/llama-swap"."platforms.linux-arm64-musl"]
-checksum = "sha256:2501d3b5bbab316851ef3088e41e74c23ba0c9e811823f0c6b9fc3dd89d9d351"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_arm64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578717"
-
-[tools."github:mostlygeek/llama-swap"."platforms.linux-x64"]
-checksum = "sha256:e5dbf4087ed0f41e83218713f20cc8afd505d85f9e49f750fefc38493c744fb3"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578720"
-
-[tools."github:mostlygeek/llama-swap"."platforms.linux-x64-musl"]
-checksum = "sha256:e5dbf4087ed0f41e83218713f20cc8afd505d85f9e49f750fefc38493c744fb3"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578720"
-
-[tools."github:mostlygeek/llama-swap"."platforms.macos-arm64"]
-checksum = "sha256:4586194885dde9101cc7fe7ee3d08c7fbe0568a4143badb3d82f7e574e426d74"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578733"
-
-[tools."github:mostlygeek/llama-swap"."platforms.macos-x64"]
-checksum = "sha256:f6f6680acc6d83668ee33fa25530ea4f321c513585186bf3563e141bfae5b625"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_darwin_amd64.tar.gz"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578736"
-
-[tools."github:mostlygeek/llama-swap"."platforms.windows-x64"]
-checksum = "sha256:0494c8f43b7c298623ad45f14e96157c53b8d4c3dc878f56b3cf12db1b1a3b68"
-url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_windows_amd64.zip"
-url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578719"
 
 [[tools.gitleaks]]
 version = "8.30.1"
@@ -228,36 +193,8 @@ checksum = "sha256:d29144deff3a68aa93ced33dddf84b7fdc26070add4aa0f4513094c8332af
 url = "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_windows_x64.zip"
 
 [[tools.helm]]
-version = "4.2.2"
+version = "4.2.3"
 backend = "aqua:helm/helm"
-
-[tools.helm."platforms.linux-arm64"]
-checksum = "sha256:78803142087a0069fa4b50d3f32a84d3ef25c14d1ee8a40fbccf86a6216d2f36"
-url = "https://get.helm.sh/helm-v4.2.2-linux-arm64.tar.gz"
-
-[tools.helm."platforms.linux-arm64-musl"]
-checksum = "sha256:78803142087a0069fa4b50d3f32a84d3ef25c14d1ee8a40fbccf86a6216d2f36"
-url = "https://get.helm.sh/helm-v4.2.2-linux-arm64.tar.gz"
-
-[tools.helm."platforms.linux-x64"]
-checksum = "sha256:9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6"
-url = "https://get.helm.sh/helm-v4.2.2-linux-amd64.tar.gz"
-
-[tools.helm."platforms.linux-x64-musl"]
-checksum = "sha256:9adafecab4d406853bba163a70e9f104f47dbbf65ce24b7653bae7e36150bcb6"
-url = "https://get.helm.sh/helm-v4.2.2-linux-amd64.tar.gz"
-
-[tools.helm."platforms.macos-arm64"]
-checksum = "sha256:5410a0dae3d5d91f45653b161260d9301aabc4ae80ae50a6605d66884b6df8ea"
-url = "https://get.helm.sh/helm-v4.2.2-darwin-arm64.tar.gz"
-
-[tools.helm."platforms.macos-x64"]
-checksum = "sha256:10c1e36ee8c5f2e2ee25a16599cb03ab74c0953cd889cacb980a49ba4b6574ba"
-url = "https://get.helm.sh/helm-v4.2.2-darwin-amd64.tar.gz"
-
-[tools.helm."platforms.windows-x64"]
-checksum = "sha256:29589dad546f8bcd3a6ad92261fcb4a6c9db4a32f9e4fc4f5212db189553dc60"
-url = "https://get.helm.sh/helm-v4.2.2-windows-amd64.tar.gz"
 
 [[tools.jq]]
 version = "1.8.2"
@@ -406,7 +343,7 @@ version = "11.16.0"
 backend = "npm:@mermaid-js/mermaid-cli"
 
 [[tools."npm:@openai/codex"]]
-version = "0.144.0"
+version = "0.144.1"
 backend = "npm:@openai/codex"
 
 [[tools."pipx:yamllint"]]
@@ -442,43 +379,8 @@ checksum = "sha256:ea8a0c84902e48c1875558f2f362ed8476773aa5fc8c16c5d8f2acc2a2830
 url = "https://github.com/pre-commit/pre-commit/releases/download/v4.6.0/pre-commit-4.6.0.pyz"
 
 [[tools.python]]
-version = "3.13.14"
+version = "3.14.6"
 backend = "core:python"
-
-[tools.python."platforms.linux-arm64"]
-checksum = "sha256:e931d7a393f54902503f8745ceb35420e7dd50a067e78e5f45c71404f7a15b30"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.linux-arm64-musl"]
-checksum = "sha256:530453a8d47dcf234dbdebb8fdc8fb7277e1edc0f1b6e326e7a80e064318f019"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-unknown-linux-musl-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.linux-x64"]
-checksum = "sha256:459ed79967acc207bef2ff5124dac35d74d5108528e37b15395d14e2922f2c92"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.linux-x64-musl"]
-checksum = "sha256:88a95f01ab0cb402822f803facea2f938d9b4cfe08da3d866629ac21c62c1f83"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-unknown-linux-musl-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.macos-arm64"]
-checksum = "sha256:795a5aeeb050f00aa8a2214d779bad9f1b9113edb6923317a80c042a11a087d7"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-aarch64-apple-darwin-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.macos-x64"]
-checksum = "sha256:fdbe7198fb32f24ab99c67cb68cb265615e0bb6cb6586ffccb629ef9ca868420"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-apple-darwin-install_only_stripped.tar.gz"
-provenance = "github-attestations"
-
-[tools.python."platforms.windows-x64"]
-checksum = "sha256:7c3159205dda0289a47e6dd1226c4e5800b1f99a03146cdc25a41fed8ef74f5a"
-url = "https://github.com/astral-sh/python-build-standalone/releases/download/20260623/cpython-3.13.14+20260623-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
-provenance = "github-attestations"
 
 [[tools.ripgrep]]
 version = "15.1.0"
@@ -573,40 +475,5 @@ checksum = "sha256:60cd368533d0ad73fa86d93d5bbf95ef40587245ce684ed138c1b31557b5f
 url = "https://github.com/mvdan/sh/releases/download/v3.13.1/shfmt_v3.13.1_windows_amd64.exe"
 
 [[tools.uv]]
-version = "0.11.26"
+version = "0.11.28"
 backend = "aqua:astral-sh/uv"
-
-[tools.uv."platforms.linux-arm64"]
-checksum = "sha256:47418cfdb34b1ca42e503da72631ac8c475602e2411ac6c39aa84c2373fe6324"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-aarch64-unknown-linux-musl.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.linux-arm64-musl"]
-checksum = "sha256:47418cfdb34b1ca42e503da72631ac8c475602e2411ac6c39aa84c2373fe6324"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-aarch64-unknown-linux-musl.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.linux-x64"]
-checksum = "sha256:62bf1a53501adf4083224b69b33737450ac516935f5a5e483e9dfaf2665084de"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-x86_64-unknown-linux-musl.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.linux-x64-musl"]
-checksum = "sha256:62bf1a53501adf4083224b69b33737450ac516935f5a5e483e9dfaf2665084de"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-x86_64-unknown-linux-musl.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.macos-arm64"]
-checksum = "sha256:8f7fbf1708399b921857bce71e1d60f0d3ccf52a30caebc1c1a2f175dce13ab6"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-aarch64-apple-darwin.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.macos-x64"]
-checksum = "sha256:922b460202707dd5f4ccacbadbe7f6a546cc46e82a99bf50ca99a7977a78eddd"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-x86_64-apple-darwin.tar.gz"
-provenance = "github-attestations"
-
-[tools.uv."platforms.windows-x64"]
-checksum = "sha256:4e1278ede866be6c0bf32d2f466cc6de7a9fb399ecf20c9ce2d186e52424be47"
-url = "https://github.com/astral-sh/uv/releases/download/0.11.26/uv-x86_64-pc-windows-msvc.zip"
-provenance = "github-attestations"
