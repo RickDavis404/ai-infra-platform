@@ -455,17 +455,25 @@ fnox_decrypt() {
     die "fnox_decrypt: missing secret key argument"
   fi
   local age_key_file="${FNOX_AGE_KEY_FILE:-$(repo_root)/secrets/age/key.txt}"
-  # `fnox get` resolves fnox.toml by walking up from CWD, so a caller invoked from a
-  # temp dir OUTSIDE the repo (codex smoke + verify-gateway both `cd` to a mktemp
-  # workdir before running the codex wrapper) fails with "No configuration file
-  # found". Pin the config path to the repo copy rather than depending on CWD.
-  local fnox_config
-  fnox_config="$(repo_root)/fnox.toml"
+  # `fnox get` resolves its config by walking UP from CWD and merging every
+  # fnox.toml/fnox.local.toml it finds (local wins), so a caller invoked from a temp
+  # dir OUTSIDE the repo (codex smoke + verify-gateway both `cd` to a mktemp workdir
+  # before running the codex wrapper) fails with "No configuration file found".
+  #
+  # Pinning `--config <repo>/fnox.toml` fixes the CWD dependency but BREAKS resolution:
+  # committed fnox.toml is a marker-only template (placeholder ciphertext); the real
+  # age-encrypted values live in the gitignored fnox.local.toml beside it, and passing
+  # `--config` disables the hierarchical merge so fnox.local.toml is never loaded — the
+  # placeholder then fails to decrypt ("failed to create decryptor"). Instead, run fnox
+  # from a subshell cd'd into repo_root so discovery+merge works exactly as it does in
+  # an interactive shell (identical to the secret-env.sh `_fx` loader).
+  local repo
+  repo="$(repo_root)"
   if [[ -f "${age_key_file}" ]]; then
-    if ! FNOX_AGE_KEY_FILE="${age_key_file}" fnox get --config "${fnox_config}" "${key}" </dev/null; then
+    if ! ( cd "${repo}" && FNOX_AGE_KEY_FILE="${age_key_file}" fnox get "${key}" </dev/null ); then
       die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
     fi
-  elif ! fnox get --config "${fnox_config}" "${key}" </dev/null; then
+  elif ! ( cd "${repo}" && fnox get "${key}" </dev/null ); then
     die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
   fi
 }
