@@ -43,6 +43,11 @@ readonly RTO_TIMEOUT="${HA_RTO_TIMEOUT:-300}"
 # these two components their own readiness budget; everything else stays at RTO_TIMEOUT
 # so a genuine slow-recovery regression in a fast component still fails the phase.
 readonly LANGFUSE_RTO="${HA_LANGFUSE_RTO:-900}"
+# litellm's boot chain (wait-for-postgres init + prisma-migrate + app init) carries a
+# declared 1200s startupProbe budget (kubernetes/litellm/deployment.yaml, 120x10s), so
+# holding its pod-loss recovery to the generic 300s would contradict the platform's own
+# recovery envelope. Same reasoning as LANGFUSE_RTO; normal boots finish in minutes.
+readonly LITELLM_RTO="${HA_LITELLM_RTO:-900}"
 readonly DATA_NS="langfuse-data"
 CANARY_TAG="ha-pod-$(date +%s)"
 readonly CANARY_TAG
@@ -134,49 +139,113 @@ cleanup_pg() {
     psql -At -d "$(canary_db)" -c "DELETE FROM ha_canary WHERE tag='${CANARY_TAG}';" >/dev/null 2>&1 || true
 }
 
-# Probe a Service health endpoint continuously across a pod delete to confirm
-# zero-downtime on the surviving replica. Runs via a transient in-cluster curl.
+# --- Recovery wait (race-free) ---------------------------------------------------
+# `kubectl wait --for=condition=Ready` is the WRONG primitive right after a pod
+# delete: the just-deleted pod still matches the label selector (and, for
+# StatefulSets, the pod name) while it terminates. If its Ready condition has not
+# flipped yet, the wait returns immediately (a VACUOUS pass asserting nothing about
+# the replacement — observed as 0-1s "recreated and Ready" claims for CNPG members);
+# once kubelet marks it NotReady, the watch instead errors the moment the object is
+# deleted (a SPURIOUS fail long before the deadline — observed 19-41s into a 300s
+# budget, mislabeled as an RTO timeout, on the 2026-07-10 fresh-cluster runs).
+# Poll instead until (a) the deleted incarnation's UID is gone from the selector
+# set, (b) the controller restored the pre-delete count of non-terminating pods,
+# and (c) every one of them is Ready — bounded by the same deadline, so a genuine
+# non-recovery still fails the phase.
+
+# _pods_state <ns> <selector> — one line per matching pod:
+#   "<uid> <phase> <T|-> <Ready-status|''>"   (T = deletionTimestamp set)
+_pods_state() {
+  local ns="$1" selector="$2"
+  kc -n "${ns}" get pods -l "${selector}" -o go-template='{{range .items}}{{.metadata.uid}} {{.status.phase}} {{if .metadata.deletionTimestamp}}T{{else}}-{{end}} {{range .status.conditions}}{{if eq .type "Ready"}}{{.status}}{{end}}{{end}}{{"\n"}}{{end}}' 2>/dev/null || true
+}
+
+# _live_ready_counts <old_uid> — reads _pods_state lines on stdin; prints
+# "<live> <ready> <old_seen>". "Live" = not terminating and not Succeeded/Failed
+# (completed Job pods share app labels in some namespaces and must not count).
+_live_ready_counts() {
+  local old_uid="$1" uid phase term ready live=0 ok=0 old_seen=0
+  while read -r uid phase term ready; do
+    [[ -n "${uid}" ]] || continue
+    if [[ -n "${old_uid}" && "${uid}" == "${old_uid}" ]]; then
+      old_seen=1
+    fi
+    [[ "${term}" == "-" ]] || continue
+    case "${phase}" in Succeeded | Failed) continue ;; esac
+    live=$((live + 1))
+    if [[ "${ready}" == "True" ]]; then
+      ok=$((ok + 1))
+    fi
+  done
+  printf '%s %s %s\n' "${live}" "${ok}" "${old_seen}"
+}
+
+# wait_pods_recovered <ns> <selector> <old_uid> <want> <deadline_s> <label>
+wait_pods_recovered() {
+  local ns="$1" selector="$2" old_uid="$3" want="$4" deadline="$5" label="$6"
+  local elapsed=0 live ready old_seen
+  while :; do
+    read -r live ready old_seen < <(_pods_state "${ns}" "${selector}" | _live_ready_counts "${old_uid}")
+    if [[ "${old_seen}" -eq 0 && "${live}" -ge "${want}" && "${ready}" -eq "${live}" ]]; then
+      return 0
+    fi
+    if [[ "${elapsed}" -ge "${deadline}" ]]; then
+      err "${label}: recovery state after ${deadline}s: live=${live}/${want} ready=${ready} deleted-pod-still-present=${old_seen}"
+      return 1
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+}
+
+# Delete one replica of a stateless/app component and assert the controller
+# restores the full pre-delete Ready replica count (Service stays served by the
+# surviving replica(s) meanwhile).
 delete_pod_zero_downtime() {
   local ns="$1" selector="$2" label="$3" timeout="${4:-${RTO_TIMEOUT}}"
-  local pod
+  local pod uid want
   pod="$(kc -n "${ns}" get pods -l "${selector}" \
+    --field-selector=status.phase=Running \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
   if [[ -z "${pod}" ]]; then
-    warn "${label}: no pod matched selector '${selector}' (component may not be deployed) — skipping"
+    warn "${label}: no Running pod matched selector '${selector}' (component may not be deployed) — skipping"
     return 0
   fi
+  uid="$(kc -n "${ns}" get pod "${pod}" -o jsonpath='{.metadata.uid}' 2>/dev/null || echo '')"
+  read -r want _ _ < <(_pods_state "${ns}" "${selector}" | _live_ready_counts '')
   info "${label}: deleting pod ${pod} (Service must stay served by surviving replica)"
   kc -n "${ns}" delete pod "${pod}" --wait=false >/dev/null 2>&1 ||
     note_fail "${label}: delete pod failed"
-  # Wait for the controller to recreate and the rollout/endpoints to be Ready again.
-  if ! kc -n "${ns}" wait --for=condition=Ready pod -l "${selector}" \
-    --timeout="${timeout}s" >/dev/null 2>&1; then
-    note_fail "${label}: pods did not return Ready within ${timeout}s"
+  if ! wait_pods_recovered "${ns}" "${selector}" "${uid}" "${want}" "${timeout}" "${label}"; then
+    note_fail "${label}: controller did not restore ${want} Ready replica(s) within ${timeout}s"
   else
-    info "${label}: controller recreated pod and endpoints are Ready"
+    info "${label}: controller recreated pod; ${want}/${want} replicas Ready"
   fi
 }
 
-# Delete one quorum member at a time and assert quorum is preserved (StatefulSet
-# recreates with the SAME PVC / ordinal).
+# Delete one quorum member at a time and assert quorum is preserved: the deleted
+# incarnation is gone and the full pre-delete member count is back Ready
+# (StatefulSet recreates with the SAME PVC/ordinal; CNPG may re-clone under a new
+# instance name — both satisfy the selector-count assertion).
 delete_stateful_member() {
   local ns="$1" selector="$2" label="$3"
-  local pod
+  local pod uid want
   pod="$(kc -n "${ns}" get pods -l "${selector}" \
+    --field-selector=status.phase=Running \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
   if [[ -z "${pod}" ]]; then
-    warn "${label}: no pod matched '${selector}' — skipping"
+    warn "${label}: no Running pod matched '${selector}' — skipping"
     return 0
   fi
+  uid="$(kc -n "${ns}" get pod "${pod}" -o jsonpath='{.metadata.uid}' 2>/dev/null || echo '')"
+  read -r want _ _ < <(_pods_state "${ns}" "${selector}" | _live_ready_counts '')
   info "${label}: deleting one member ${pod} (must not drop below quorum)"
   kc -n "${ns}" delete pod "${pod}" --wait=false >/dev/null 2>&1 ||
     note_fail "${label}: delete failed"
-  if ! kc -n "${ns}" wait --for=condition=Ready pod "${pod}" \
-    --timeout="${RTO_TIMEOUT}s" >/dev/null 2>&1; then
-    # StatefulSet pods keep their name; wait on the recreated same-name pod.
-    note_fail "${label}: member ${pod} did not return Ready within RTO"
+  if ! wait_pods_recovered "${ns}" "${selector}" "${uid}" "${want}" "${RTO_TIMEOUT}" "${label}"; then
+    note_fail "${label}: quorum not restored (${want} Ready members) within ${RTO_TIMEOUT}s"
   else
-    info "${label}: member ${pod} recreated and Ready (PVC re-attached)"
+    info "${label}: member recreated; ${want}/${want} members Ready (quorum preserved)"
   fi
 }
 
@@ -191,7 +260,11 @@ main() {
   # langfuse web/worker get the longer cold-start budget (see LANGFUSE_RTO note above).
   delete_pod_zero_downtime "langfuse" "app=web" "Langfuse web" "${LANGFUSE_RTO}"
   delete_pod_zero_downtime "langfuse" "app=worker" "Langfuse worker" "${LANGFUSE_RTO}"
-  delete_pod_zero_downtime "litellm" "app=litellm" "LiteLLM"
+  # component=gateway excludes the Completed key-provisioner Job pods, which share
+  # app.kubernetes.io/name=litellm (the old `app=litellm` selector matched nothing
+  # and silently skipped this target).
+  delete_pod_zero_downtime "litellm" \
+    "app.kubernetes.io/name=litellm,app.kubernetes.io/component=gateway" "LiteLLM" "${LITELLM_RTO}"
   delete_pod_zero_downtime "lgtm" "app.kubernetes.io/name=grafana" "Grafana"
 
   # --- Stateful pods (one quorum member at a time) ---
@@ -202,10 +275,14 @@ main() {
     "cnpg.io/cluster=langfuse-pg,cnpg.io/instanceRole=primary" "CNPG primary"
   delete_stateful_member "${DATA_NS}" \
     "clickhouse.altinity.com/chi=langfuse-ch" "ClickHouse replica"
+  # Altinity CHK pods carry clickhouse-keeper.altinity.com/* labels, not
+  # app.kubernetes.io/name (the old selector matched nothing and silently skipped).
   delete_stateful_member "${DATA_NS}" \
-    "app.kubernetes.io/name=clickhouse-keeper" "ClickHouse Keeper"
+    "clickhouse-keeper.altinity.com/chk=langfuse-keeper" "ClickHouse Keeper"
+  # The valkey-io chart labels no component=primary; all 3 members (1 primary +
+  # 2 replicas) live in one StatefulSet under the release-instance label.
   delete_stateful_member "${DATA_NS}" \
-    "app.kubernetes.io/name=valkey,app.kubernetes.io/component=primary" "Valkey primary"
+    "app.kubernetes.io/name=valkey,app.kubernetes.io/instance=langfuse-valkey" "Valkey member"
   delete_stateful_member "${DATA_NS}" \
     "app.kubernetes.io/name=seaweedfs,app.kubernetes.io/component=master" "SeaweedFS master"
   delete_stateful_member "${DATA_NS}" \
