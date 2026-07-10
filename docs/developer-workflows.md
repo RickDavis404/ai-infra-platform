@@ -210,9 +210,13 @@ Host-facing services are reached **directly by service VIP** on the shared L2; t
 | `smoke:ha` (+ `smoke:ha:node-loss` / `:pod-loss` / `:data-integrity` / `:recovery`) | failure-injection / reliability suite (checks the **service VIPs** + API VIP) |
 | `up` / `down` | whole-lab aggregators (bring up / tear down) |
 
-The `smoke` aggregator runs `k8s:cilium:smoke`, `langfuse:smoke`, `litellm:smoke`,
-`lgtm:smoke`, `otel:smoke`, and `host:smoke`; the additional per-plane file-tasks
-`lima:smoke`, `claude:smoke`, and `codex:smoke` can be run on their own.
+The `smoke` aggregator runs `k8s:cilium:smoke`, `host:smoke`, `models:check`,
+`langfuse:smoke`, `litellm:smoke`, `lgtm:smoke`, `otel:smoke`, and finally
+`litellm:verify-scrub` (the §8c spend-log credential-scrub regression gate — it
+reads the spend-log DB and asserts the newest chatgpt/anthropic passthrough rows
+are masked, or SKIPS cleanly when no gateway traffic exists yet); the additional
+per-plane file-tasks `lima:smoke`, `claude:smoke`, and `codex:smoke` can be run on
+their own.
 
 ## 4. Bootstrap flow
 
