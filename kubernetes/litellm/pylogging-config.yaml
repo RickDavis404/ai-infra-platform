@@ -449,25 +449,6 @@ data:
         except Exception as exc:  # noqa: BLE001
             _log.warning("ChatGPT passthrough: responses validate_environment patch failed (%s).", exc)
 
-        # --- Pin ChatGPTResponsesAPIConfig.should_fake_stream to False -------------
-        # The ChatGPT Codex backend is STREAM-ONLY, and the provider's own
-        # transform_responses_api_request already forces stream=True unconditionally,
-        # so fake-streaming is never correct for chatgpt/*. The inherited
-        # OpenAIResponsesAPIConfig.should_fake_stream consults the pinned image's
-        # built-in cost map and returns True for any model the map doesn't know
-        # (e.g. gpt-5.5, gpt-5.6-*); that path strips `stream` from the outbound
-        # body via _prepare_fake_stream_request and triggers an upstream 400
-        # "Stream must be set to true" — exactly the built-in-map dependence the
-        # gpt-* wildcard exists to avoid. Forcing False keeps the wildcard path
-        # byte-identical in shape to the exact-match path.
-        try:
-            def _responses_should_fake_stream(self, model, stream, custom_llm_provider=None):
-                return False
-
-            ChatGPTResponsesAPIConfig.should_fake_stream = _responses_should_fake_stream
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("ChatGPT passthrough: should_fake_stream patch failed (%s).", exc)
-
         # --- Override ChatGPTResponsesAPIConfig.should_fake_stream ------------------
         # The stock OpenAIResponsesAPIConfig.should_fake_stream() (inherited unless
         # overridden) calls litellm.utils.supports_native_streaming(), which looks the
