@@ -16,7 +16,6 @@ data:
       database_url: os.environ/DATABASE_URL      # CNPG-minted; secretKeyRef
       store_model_in_db: true
       store_prompts_in_spend_logs: true
-      maximum_spend_logs_retention_period: "90d"
       # DO NOT set litellm_key_header_name. The DEFAULT header x-litellm-api-key is
       # load-bearing: the litellm-database image tag pinned in deployment.yaml
       # hardcodes "x-litellm-api-key" in its OAuth auto-forwarding when deciding which
@@ -26,6 +25,10 @@ data:
 
     litellm_settings:
       drop_params: true
+      # Max-capture: clients can NOT suppress logging with a `no-log: true` body param —
+      # every callback (langfuse/otel/prometheus/s3_v2) always fires. This is a litellm.
+      # module attribute, so it MUST live under litellm_settings (general_settings is a no-op).
+      global_disable_no_log_param: true
       set_verbose: false
       num_retries: 3
       request_timeout: 600          # local models: 80-100K-token Claude Code context
@@ -33,7 +36,7 @@ data:
       cooldown_time: 30
       success_callback: ["langfuse"]   # rich trace on every success
       failure_callback: ["langfuse"]   # rich trace on every failure
-      callbacks: ["otel", "prometheus"]
+      callbacks: ["otel", "prometheus", "s3_v2"]   # s3_v2 fires on success AND failure
       langfuse_session_id_header: "X-Claude-Code-Session-Id"
       langfuse_default_tags:
         - proxy_base_url
@@ -44,6 +47,21 @@ data:
         - cache_hit
         - semantic-similarity
       require_auth_for_metrics_endpoint: false   # localhost-only; document tradeoff
+      # s3_v2 payload archive: full StandardLoggingPayload JSON (messages + response +
+      # tokens + cost + metadata) per call, to the in-cluster SeaweedFS embedded S3.
+      s3_callback_params:
+        s3_bucket_name: litellm-payloads
+        s3_endpoint_url: http://langfuse-seaweedfs-s3.langfuse-data.svc.cluster.local:8333
+        s3_region_name: us-east-1                # SigV4 scope only; SeaweedFS ignores region
+        s3_aws_access_key_id: os.environ/S3_ACCESS_KEY_ID
+        s3_aws_secret_access_key: os.environ/S3_SECRET_ACCESS_KEY
+        s3_use_virtual_hosted_style: false       # PATH-STYLE required for SeaweedFS
+        s3_use_team_prefix: true                 # object keys prefixed by team alias
+        s3_use_key_prefix: true                  # ...and by virtual-key alias
+      # Promote the client spend-tag header to spend TAGS as well (pairs with the
+      # x-litellm-spend-logs-metadata header the CLIs now send — see secret-env.sh / codex wrapper).
+      extra_spend_tag_headers:
+        - "x-litellm-spend-logs-metadata"
 
     model_list:
       # --- Local routes (§9.3) -------------------------------------------------

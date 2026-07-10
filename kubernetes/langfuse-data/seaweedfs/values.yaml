@@ -123,6 +123,7 @@ filer:
       - name: loki-chunks
       - name: loki-ruler
       - name: loki-admin
+      - name: litellm-payloads # LiteLLM s3_v2 payload archive (kubernetes/litellm/proxy-config.yaml)
 
 # --- Standalone gateways disabled (embedded filer S3 is used instead) ------------
 s3:

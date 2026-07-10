@@ -279,6 +279,21 @@ spec:
               value: "100000000"
             - name: LANGFUSE_MAX_BATCH_SIZE_BYTES
               value: "100000000"
+            # Explicit langfuse flush floor (code default is already 1s — self-documentation).
+            - name: LANGFUSE_FLUSH_INTERVAL
+              value: "1"
+            # s3_v2 payload-archive creds (same SeaweedFS admin identity the platform buckets use);
+            # materialized into litellm-app-secrets by `mise run secrets:sync`.
+            - name: S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: S3_ACCESS_KEY_ID
+            - name: S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: litellm-app-secrets
+                  key: S3_SECRET_ACCESS_KEY
             # Structured JSON logging; sitecustomize.py (PYTHONPATH) rewrites the
             # uvicorn.access records into JSON before LiteLLM's JsonFormatter runs.
             - name: JSON_LOGS
