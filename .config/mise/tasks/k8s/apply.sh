@@ -165,6 +165,27 @@ apply_overlay() {
     if ((rc == 0)); then
       return 0
     fi
+    # Helm-hook Jobs (e.g. the SeaweedFS bucket hook) embed chart-versioned pod
+    # templates, but Job spec.template is IMMUTABLE — the first apply after a chart
+    # bump dies with `The Job "<name>" is invalid: ... field is immutable`. The old
+    # (completed) Job is disposable: delete the named Job(s) and re-apply so the
+    # chart's new hook Job is recreated and re-runs (all hook Jobs here are
+    # idempotent — bucket creation etc.). Same class of fix as litellm:remint-keys.
+    if printf '%s' "${out}" | grep -q 'The Job "' && printf '%s' "${out}" | grep -q 'field is immutable'; then
+      local job_name job_ns
+      while IFS= read -r job_name; do
+        [[ -n "${job_name}" ]] || continue
+        job_ns="$(kc get jobs -A -o jsonpath="{.items[?(@.metadata.name=='${job_name}')].metadata.namespace}" 2>/dev/null || true)"
+        if [[ -n "${job_ns}" ]]; then
+          warn "apply ${rel}: Job ${job_ns}/${job_name} has an immutable template change from a chart bump; deleting so it can be recreated"
+          kc -n "${job_ns}" delete job "${job_name}" --wait=true || true
+        fi
+      done < <(printf '%s' "${out}" | grep -o 'The Job "[^"]*"' | sed 's/^The Job "//;s/"$//' | sort -u)
+      if ((attempt < APPLY_RETRIES)); then
+        ((attempt++))
+        continue
+      fi
+    fi
     # Only retry KNOWN-transient failures: webhook unavailability, API blips, and
     # host->kube-vip API VIP connection drops over socket_vmnet under load (connection
     # reset by peer / http2 connection lost / broken pipe / mid-response read error).
