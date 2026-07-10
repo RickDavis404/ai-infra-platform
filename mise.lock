@@ -160,6 +160,41 @@ provenance = "github-attestations"
 version = "235"
 backend = "github:mostlygeek/llama-swap"
 
+[tools."github:mostlygeek/llama-swap"."platforms.linux-arm64"]
+checksum = "sha256:2501d3b5bbab316851ef3088e41e74c23ba0c9e811823f0c6b9fc3dd89d9d351"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578717"
+
+[tools."github:mostlygeek/llama-swap"."platforms.linux-arm64-musl"]
+checksum = "sha256:2501d3b5bbab316851ef3088e41e74c23ba0c9e811823f0c6b9fc3dd89d9d351"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_arm64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578717"
+
+[tools."github:mostlygeek/llama-swap"."platforms.linux-x64"]
+checksum = "sha256:e5dbf4087ed0f41e83218713f20cc8afd505d85f9e49f750fefc38493c744fb3"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578720"
+
+[tools."github:mostlygeek/llama-swap"."platforms.linux-x64-musl"]
+checksum = "sha256:e5dbf4087ed0f41e83218713f20cc8afd505d85f9e49f750fefc38493c744fb3"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578720"
+
+[tools."github:mostlygeek/llama-swap"."platforms.macos-arm64"]
+checksum = "sha256:4586194885dde9101cc7fe7ee3d08c7fbe0568a4143badb3d82f7e574e426d74"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578733"
+
+[tools."github:mostlygeek/llama-swap"."platforms.macos-x64"]
+checksum = "sha256:f6f6680acc6d83668ee33fa25530ea4f321c513585186bf3563e141bfae5b625"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_darwin_amd64.tar.gz"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578736"
+
+[tools."github:mostlygeek/llama-swap"."platforms.windows-x64"]
+checksum = "sha256:0494c8f43b7c298623ad45f14e96157c53b8d4c3dc878f56b3cf12db1b1a3b68"
+url = "https://github.com/mostlygeek/llama-swap/releases/download/v235/llama-swap_235_windows_amd64.zip"
+url_api = "https://api.github.com/repos/mostlygeek/llama-swap/releases/assets/465578719"
+
 [[tools.gitleaks]]
 version = "8.30.1"
 backend = "aqua:gitleaks/gitleaks"
