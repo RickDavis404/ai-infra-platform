@@ -9,6 +9,15 @@
 # EXCEPTION: llama-swap is mise-managed via the github backend below (its Homebrew
 # tap refused to load on a fresh `brew bundle`).
 
+# min_version gates the mise TOOLCHAIN itself (top-level key): the fnox >= 1.29 pin below
+# only verifies its GitHub artifact attestation under mise >= 2026.7.0. mise 2026.6.13's
+# embedded Sigstore trusted root predated a GitHub TSA cert rotation and failed "TSA
+# timestamp verification" on any attestation minted after it; mise PR #10695 (first in
+# 2026.7.0) fixes it by retrying with GitHub's live TUF root. Pinning it here makes a
+# stale-mise box fail fast with a clear "version X required" message instead of the
+# cryptic TSA error. CI + remote already run 2026.7.5.
+min_version = "2026.7.0"
+
 [settings]
 lockfile = true
 # npm:@openai/codex and npm:@anthropic-ai/claude-code are each pinned to a release published
@@ -22,7 +31,7 @@ minimum_release_age_excludes = ["npm:@openai/codex", "npm:@anthropic-ai/claude-c
 [tools]
 # --- Secrets toolchain ---
 age  = "1.3.1"     # age encryption (fnox backend) — current stable (verified in mise registry)
-fnox = "1.28.0"   # fnox secret resolver — HELD at 1.28.0: v1.29.0/v1.30.0 release attestations are broken/absent on macos-arm64 (TSA verify fails; gh attestation API 404s the 1.30.0 tarball) and mise blocks unattested upgrades of a secret-resolver by design. Re-try on the next upstream release.
+fnox = "1.30.0"   # fnox secret resolver — the old 1.28.0 hold was a mise bug, NOT a fnox breakage: v1.29/v1.30 attestations are VALID (in-toto release predicate, RFC3161 TSA-timestamped, structurally identical to 1.28.0's). mise 2026.6.13's stale embedded Sigstore trusted root predated a GitHub TSA cert rotation, so it failed "TSA timestamp verification" on any attestation minted after it; the earlier "gh attestation 404" was the default SLSA-predicate filter and hit 1.28.0 identically. Fixed in mise >= 2026.7.0 (see min_version) — installs clean with FULL attestation verification under mise 2026.7.5.
 
 # --- Kubernetes client tooling ---
 kubectl      = "1.36.2"
