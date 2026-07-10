@@ -34,24 +34,33 @@ trace or `/status` showing base URL `192.168.105.200:4000`.
 ## Agent auth on a fresh Mac (install + login)
 
 The repo does **not** authenticate the `claude` / `codex` CLIs — they auth **out-of-band per
-machine, subscription OAuth only (never an API key)**. **Codex is now mise-managed in-repo** (an
-`npm:@openai/codex` backend pin in `mise.toml`), so a plain `mise install` provides it — do **not**
-`brew install --cask codex` or `npm -g` it. **Claude Code** stays mise-independent (do **not**
-`npm -g` — it entangles the mise-pinned node): `curl -fsSL https://claude.ai/install.sh | bash`
-(native arm64 → `~/.local/bin`, which must be on PATH). **Log in from OUTSIDE the repo** — mise
-activation makes `cd` into the repo inject the gateway env + `CODEX_HOME`, so never log in via
-`mise exec` / `mise run`:
+machine, subscription OAuth only (never an API key)**. **Both CLIs are now mise-managed in-repo**
+via `npm:` backend pins in `mise.toml` (`npm:@openai/codex` and `npm:@anthropic-ai/claude-code`),
+so a plain `mise install` provides both — do **not** `brew install --cask codex` or `npm -g`
+either (a global npm install entangles the mise-pinned node). The native Claude installer
+(`curl -fsSL https://claude.ai/install.sh | bash` → `~/.local/bin`) stays **optional, for
+out-of-repo use only**. **Log in from OUTSIDE the repo** — mise activation makes `cd` into the
+repo inject the gateway env + `CODEX_HOME`, so never log in via `mise exec` / `mise run`:
 
 - **Codex:** log in from `~` using the mise-managed binary so `CODEX_HOME` stays the real
   `~/.codex` (not the repo's): `cd ~ && "$(mise --cd <repo-root> which codex)" login` → ChatGPT
   OAuth → the **file** `~/.codex/auth.json` (works over headless ssh). **THEN** `mise run init` to
   wire the repo `CODEX_HOME` symlink — must be **after** login or init silently skips it.
-- **Claude:** `/login` → Anthropic Max/Pro OAuth in the **macOS login keychain**. **CRITICAL —
-  attended GUI Terminal only, NOT headless ssh:** the keychain must be unlocked in that GUI security
-  session, and macOS shows a per-app **keychain ACL prompt** ("claude wants to use confidential
-  information…") that must be clicked (**Always Allow** to suppress it). Over ssh there is no GUI to
-  approve it, so `claude` returns `Not logged in`. Keychain OAuth is **not portable** between
-  machines — re-login per box. Codex (file-based) is unaffected.
+- **Claude:** log in from `~` using the mise-managed binary **by path** (so the gateway env is not
+  injected and the keychain item is created/owned by *that* binary):
+  `cd ~ && "$(mise --cd <repo-root> which claude)"` then type `/login` → Anthropic Max/Pro OAuth in
+  the **macOS login keychain**. **CRITICAL — attended GUI Terminal only, NOT headless ssh:** the
+  keychain must be unlocked in that GUI security session, and macOS shows a per-app **keychain ACL
+  prompt** ("claude wants to use confidential information…") that must be clicked (**Always Allow** to
+  suppress it). **Keychain ACLs are per-BINARY:** the mise-managed `claude` is a *different* binary at
+  a version-specific install path, so the FIRST in-repo run after switching to it — and again after
+  **every version bump** (the mise install path changes per version) — triggers **one** fresh attended
+  ACL approval on each machine; until it is clicked, headless runs return `Not logged in` even with the
+  `security unlock-keychain` workaround active. Keychain OAuth is also **not portable** between
+  machines — re-login per box. Codex (file-based) is unaffected. *Mitigation (documented, not wired
+  up):* `claude setup-token` mints a long-lived OAuth token usable via `CLAUDE_CODE_OAUTH_TOKEN`
+  (binary-independent, could be fnox-sealed alongside the other secrets) if per-version ACL
+  re-approval proves too costly for headless/ssh use.
 
 Full install / auth / verify steps + troubleshooting: [`docs/agent-auth.md`](docs/agent-auth.md).
 
