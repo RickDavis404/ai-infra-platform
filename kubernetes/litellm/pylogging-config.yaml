@@ -15,9 +15,10 @@ data:
   #         makes LiteLLM's chatgpt/ provider reuse the Codex-forwarded ChatGPT
   #         subscription OAuth (Authorization: Bearer + chatgpt-account-id) instead
   #         of running a BLOCKING device-flow at model-load. Opt-out with
-  #         CHATGPT_PASSTHROUGH_PATCH=0; default-on. Pinned to LiteLLM v1.90.0
-  #         internals and wholly best-effort — every import/override is guarded so a
-  #         future image upgrade can never block or crash proxy startup.
+  #         CHATGPT_PASSTHROUGH_PATCH=0; default-on. Pinned to the litellm-database
+  #         image tag in deployment.yaml (version-coupled internals) and wholly
+  #         best-effort — every import/override is guarded so a future image upgrade
+  #         can never block or crash proxy startup.
   sitecustomize.py: |
     """Structured uvicorn access logging for LiteLLM (§8a).
 
@@ -144,7 +145,7 @@ data:
     # ====================================================================
     """§8b ChatGPT client-OAuth passthrough monkeypatch (EXPERIMENTAL, version-coupled).
 
-    Pinned to LiteLLM v1.90.0 (image ghcr.io/berriai/litellm-database:v1.90.0). Wholly
+    Pinned to the litellm-database image tag in deployment.yaml. Wholly
     best-effort: EVERY import and override is wrapped so that, on any future LiteLLM
     upgrade that moves/renames these private internals, the patch logs a warning and
     returns WITHOUT touching the proxy — interpreter/proxy startup can never be
@@ -155,8 +156,8 @@ data:
     The stock `chatgpt/` provider (llms/chatgpt) authenticates by calling
     `Authenticator.get_access_token()`, which — if no cached token exists at
     ~/.config/litellm/chatgpt/auth.json — runs a BLOCKING interactive device-flow
-    OAuth (prints a verification URL and polls). When the `gpt-5.4` route is loaded
-    that device-flow can fire and block, crashing the proxy on a headless cluster.
+    OAuth (prints a verification URL and polls). When a `gpt-*` passthrough route is
+    loaded that device-flow can fire and block, crashing the proxy on a headless cluster.
 
     This patch makes the chatgpt provider a CLIENT-OAUTH PASSTHROUGH: the Codex client
     already holds a ChatGPT-subscription OAuth token and forwards it as
@@ -193,20 +194,12 @@ data:
         "off",
     }
 
-    # Models (with and without the `chatgpt/` prefix) for which a forwarded
-    # Authorization is REQUIRED — i.e. the passthrough routes.
-    _CHATGPT_PASSTHROUGH_MODELS = frozenset(
-        base if not pfx else f"{pfx}{base}"
-        for base in (
-            "gpt-5.5",
-            "gpt-5.4",
-            "gpt-5.4-mini",
-            "gpt-5.3-codex",
-            "gpt-5.3-codex-spark",
-            "codex-auto-review",
-        )
-        for pfx in ("", "chatgpt/")
-    )
+    # Prefixes for which a forwarded Authorization is REQUIRED — i.e. the passthrough
+    # routes. PREFIX-scoped to mirror the router gpt-* wildcard: any gpt-*/codex-*
+    # model (bare or chatgpt/-prefixed) is client-OAuth passthrough; any OTHER
+    # provider prefix (anthropic/, openai/, mac-local/...) is excluded, preserving the
+    # old exact-match safety — claude-* and mac-local/* can never be hijacked.
+    _CHATGPT_PASSTHROUGH_PREFIXES = ("gpt-", "codex-")
 
     # Codex identity/passthrough headers forwarded verbatim to the ChatGPT upstream.
     _CHATGPT_PASSTHROUGH_HEADERS = (
@@ -232,11 +225,13 @@ data:
         if not model:
             return False
         name = str(model)
-        if name in _CHATGPT_PASSTHROUGH_MODELS:
-            return True
-        # Be lenient about a stray provider prefix.
-        short = name.split("/", 1)[-1]
-        return short in _CHATGPT_PASSTHROUGH_MODELS
+        if "/" in name:
+            provider, _, short = name.partition("/")
+            if provider != "chatgpt":
+                return False
+        else:
+            short = name
+        return short.startswith(_CHATGPT_PASSTHROUGH_PREFIXES)
 
 
     def _drop_unsupported_image_generation_tool(data, model) -> None:
@@ -652,7 +647,10 @@ data:
         except Exception as exc:  # noqa: BLE001
             _log.warning("ChatGPT passthrough: langfuse trace-naming patch failed (%s).", exc)
 
-        _log.info("ChatGPT client-OAuth passthrough patch (§8b) installed for v1.90.0.")
+        _log.info(
+            "ChatGPT client-OAuth passthrough patch (§8b) installed; pinned to the "
+            "litellm-database image tag in deployment.yaml."
+        )
 
 
     try:

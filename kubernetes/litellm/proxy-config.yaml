@@ -18,10 +18,11 @@ data:
       store_prompts_in_spend_logs: true
       maximum_spend_logs_retention_period: "90d"
       # DO NOT set litellm_key_header_name. The DEFAULT header x-litellm-api-key is
-      # load-bearing: v1.90.0 OAuth auto-forwarding hardcodes "x-litellm-api-key"
-      # when deciding which header authenticated the proxy, then refuses to forward
-      # that header. Authenticating with the default name lets the client's
-      # Authorization (OAuth) survive forwarding. A custom name drops the OAuth token.
+      # load-bearing: the litellm-database image tag pinned in deployment.yaml
+      # hardcodes "x-litellm-api-key" in its OAuth auto-forwarding when deciding which
+      # header authenticated the proxy, then refuses to forward that header.
+      # Authenticating with the default name lets the client's Authorization (OAuth)
+      # survive forwarding. A custom name drops the OAuth token.
 
     litellm_settings:
       drop_params: true
@@ -108,8 +109,9 @@ data:
       # mode: responses marks the model as Responses-API native (Codex custom
       # providers use wire_api = "responses").
       #
-      # WHY THIS IS NOW IN THE STATIC model_list (previously it was not): stock
-      # v1.90.0's chatgpt/ provider resolves auth EAGERLY (ChatGPTConfig
+      # WHY THIS IS NOW IN THE STATIC model_list (previously it was not): the stock
+      # chatgpt/ provider at the litellm-database image tag in deployment.yaml resolves
+      # auth EAGERLY (ChatGPTConfig
       # ._get_openai_compatible_provider_info / *.validate_environment both call
       # Authenticator.get_access_token()), which runs a BLOCKING interactive
       # device-flow OAuth when no token file exists — crashing/hanging proxy
@@ -121,22 +123,28 @@ data:
       # subscription credential is supplied by the Codex client at request time,
       # never by the proxy. (Upstream lacks a native lazy/deferred-auth mode:
       # github.com/BerriAI/litellm#27175.)
-      - model_name: "gpt-5.4"
-        model_info: { mode: responses }
-        litellm_params:
-          model: "chatgpt/gpt-5.4"
-          api_base: "https://chatgpt.com/backend-api/codex"
-      # Codex CLI exposes `gpt-5.3-codex`; the ChatGPT Codex backend expects the
-      # subscription upstream slug `gpt-5.3-codex-spark`.
+      # gpt-5.3-codex is kept EXPLICIT: Codex CLI exposes `gpt-5.3-codex`, but the
+      # ChatGPT Codex backend expects the subscription upstream slug
+      # `gpt-5.3-codex-spark`. That slug rewrite is inexpressible in the gpt-*
+      # wildcard below, and LiteLLM checks exact model_name matches before the
+      # pattern router — so this exact model_name entry takes precedence over the
+      # gpt-* wildcard below.
       - model_name: "gpt-5.3-codex"
         model_info: { mode: responses }
         litellm_params:
           model: "chatgpt/gpt-5.3-codex-spark"
           api_base: "https://chatgpt.com/backend-api/codex"
-      # gpt-5.5 is the current Codex CLI default (~/.codex `model = "gpt-5.5"`); same
-      # ChatGPT-subscription passthrough route as 5.4 (client-OAuth-only).
-      - model_name: "gpt-5.5"
+      # Single wildcard captures the suffix and routes every OTHER current AND
+      # future gpt model (gpt-5.5, gpt-5.6-sol/terra/luna, ...) 1:1 to
+      # chatgpt/gpt-<suffix>. Wildcard-matched deployments are deep-copied
+      # (router_utils/pattern_match_deployments.py), so model_info.mode=responses
+      # and api_base apply to every match. NOTE: the public gpt-* namespace is
+      # RESERVED for the client-OAuth chatgpt passthrough — never add a
+      # key-authenticated gpt-* route, or the sitecustomize (§8b) patch would
+      # forward client ChatGPT OAuth headers to it. (Mirrors the claude-* wildcard
+      # above: OAuth/subscription-only, never valid in a fallbacks chain.)
+      - model_name: "gpt-*"
         model_info: { mode: responses }
         litellm_params:
-          model: "chatgpt/gpt-5.5"
+          model: "chatgpt/gpt-*"
           api_base: "https://chatgpt.com/backend-api/codex"
