@@ -470,10 +470,10 @@ fnox_decrypt() {
   local repo
   repo="$(repo_root)"
   if [[ -f "${age_key_file}" ]]; then
-    if ! ( cd "${repo}" && FNOX_AGE_KEY_FILE="${age_key_file}" fnox get "${key}" </dev/null ); then
+    if ! (cd "${repo}" && FNOX_AGE_KEY_FILE="${age_key_file}" fnox get "${key}" </dev/null); then
       die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
     fi
-  elif ! ( cd "${repo}" && fnox get "${key}" </dev/null ); then
+  elif ! (cd "${repo}" && fnox get "${key}" </dev/null); then
     die "fnox_decrypt: failed to resolve secret '${key}' (check age identity and fnox store)"
   fi
 }
@@ -488,6 +488,345 @@ cnpg_app_db() {
   db="$(kc -n "${ns}" get cluster "${cluster}" \
     -o jsonpath='{.spec.bootstrap.initdb.database}' 2>/dev/null || echo '')"
   printf '%s\n' "${db:-app}"
+}
+
+# --- CNPG serving gate ----------------------------------------------------------
+# cnpg_wait_serving <namespace> <cluster> [timeout_s] - wait until the CNPG cluster
+# is serving and not mid-failover: either the operator reports
+# "Cluster in healthy state", or a Running primary exists alongside quorum
+# (>=2 ready instances; a re-clone of the third instance may still be running).
+# Used as a gate before rescheduling DB-dependent workloads: litellm's
+# wait-for-postgres init blocks until the primary serves, so evicting a replica
+# during an in-flight failover burns the convergence budget for nothing.
+# Returns 1 on timeout with a warning; callers decide severity - the posture
+# convergence waits downstream are the hard assertion.
+cnpg_wait_serving() {
+  local ns="$1" cluster="$2" timeout="${3:-300}" elapsed=0 phase ready primary
+  info "waiting for CNPG ${ns}/${cluster} to be serving (not mid-failover; up to ${timeout}s)"
+  while :; do
+    phase="$(kc -n "${ns}" get cluster "${cluster}" \
+      -o jsonpath='{.status.phase}' 2>/dev/null || echo '')"
+    ready="$(kc -n "${ns}" get cluster "${cluster}" \
+      -o jsonpath='{.status.readyInstances}' 2>/dev/null || echo 0)"
+    primary="$(kc -n "${ns}" get pods \
+      -l "cnpg.io/cluster=${cluster},cnpg.io/instanceRole=primary" \
+      --field-selector=status.phase=Running \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
+    if [[ "${phase}" == "Cluster in healthy state" ]] ||
+      [[ -n "${primary}" && "${ready:-0}" -ge 2 ]]; then
+      info "CNPG ${ns}/${cluster} serving (phase '${phase:-unknown}', ${ready:-0} ready)"
+      return 0
+    fi
+    if [[ "${elapsed}" -ge "${timeout}" ]]; then
+      warn "CNPG ${ns}/${cluster} not serving after ${timeout}s (phase '${phase:-unknown}', ${ready:-0} ready)"
+      return 1
+    fi
+    sleep 5
+    elapsed=$((elapsed + 5))
+  done
+}
+
+# --- HA posture restore for movable stateless workloads --------------------------
+# Kubernetes never reschedules already-Running pods, so after a node outage a
+# stateless Deployment replica that migrated onto a surviving node stays there.
+# litellm carries a 1536Mi anti-meltdown request floor AND the ai-infra-gateway
+# PriorityClass (100000) - see kubernetes/litellm/deployment.yaml - so its
+# displaced replica can land on, or outright PREEMPT priority-0 pods off, the
+# node a PVC-pinned singleton (e.g. prometheus-server-0, pinned by its
+# local-path PV's hostname nodeAffinity) needs. The singleton then goes Pending
+# FOREVER: priority 0 cannot preempt the gateway back, and its PV pins it to
+# that one node (observed live: "0/3 nodes are available ... Insufficient
+# memory ... No preemption victims found").
+#
+# A blind `rollout restart` does NOT fix this deterministically: with 2
+# replicas, 3 nodes, required hostname anti-affinity and
+# maxSurge:1/maxUnavailable:0, the roll ends off the pinned node only ~half the
+# time (it depends on which old replica the controller scales down first), and
+# it serially boots two slow litellm pods (wait-for-postgres init +
+# prisma-migrate + startup probe), which blew a 300s budget while the litellm
+# CNPG cluster was itself failing over.
+#
+# restore_movable_posture instead encodes the reliably-working manual fix:
+#   1. find PVC-pinned pods stuck Pending/unscheduled past a grace window;
+#   2. per stranded pod's home node: cordon it, evict movable Deployment
+#      replicas off it one Deployment at a time (heaviest first, gated on CNPG
+#      serving), wait for the Deployment to re-converge BEFORE uncordoning (so
+#      the replacement cannot land back), then re-check - stopping as soon as
+#      the pinned pod schedules;
+#   3. hard-assert every movable Deployment is fully available and every
+#      previously-stranded pinned pod comes back Ready (the suite must still
+#      fail on a genuine regression).
+# Idempotent: when nothing is stranded it only re-asserts availability (no
+# restarts, no-op). Cordons are tracked and removed on every path - explicitly
+# on success/failure plus an exit-trap safety net - so a failed run can never
+# leave a node unschedulable.
+
+# Movable stateless Deployments eligible for posture-restore eviction, in
+# eviction-priority order (heaviest memory request first). Format:
+#   namespace|deployment-label-selector|pod-label-selector
+# (the langfuse chart labels its Deployments app.kubernetes.io/component=web /
+# worker but their PODS app=web / app=worker, so both selectors are explicit).
+_AI_INFRA_MOVABLE_DEPLOYS=(
+  "litellm|app.kubernetes.io/name=litellm|app.kubernetes.io/name=litellm"
+  "langfuse|app.kubernetes.io/component=web|app=web"
+  "langfuse|app.kubernetes.io/component=worker|app=worker"
+)
+
+# Tunables (env-overridable). HA_POSTURE_TIMEOUT bounds each convergence wait;
+# it is deliberately independent of (and longer than) the phase RTO because
+# posture restore is post-recovery cleanup, not part of the recovery-time
+# objective being measured, and a litellm boot chain is slow.
+_AI_INFRA_POSTURE_GRACE_S="${HA_POSTURE_GRACE:-60}"
+_AI_INFRA_POSTURE_RESCHED_S="${HA_POSTURE_RESCHED_WAIT:-180}"
+
+if [[ -z "${_AI_INFRA_POSTURE_STATE_READY:-}" ]]; then
+  _AI_INFRA_POSTURE_CORDONED=()
+  _AI_INFRA_POSTURE_STATE_READY=1
+fi
+
+# _ai_infra_posture_uncordon_all - exit-trap safety net: uncordon every node the
+# posture helpers cordoned and have not yet uncordoned.
+_ai_infra_posture_uncordon_all() {
+  local n
+  if [[ "${#_AI_INFRA_POSTURE_CORDONED[@]}" -gt 0 ]]; then
+    for n in "${_AI_INFRA_POSTURE_CORDONED[@]}"; do
+      kc uncordon "${n}" >/dev/null 2>&1 || true
+    done
+  fi
+  _AI_INFRA_POSTURE_CORDONED=()
+}
+
+_ai_infra_posture_cordon() {
+  local node="$1"
+  if [[ "$(kc get node "${node}" \
+    -o jsonpath='{.spec.unschedulable}' 2>/dev/null || echo '')" == "true" ]]; then
+    die "node ${node} is already cordoned by another actor; refusing to override it"
+  fi
+  if [[ -z "${_AI_INFRA_POSTURE_TRAP_SET:-}" ]]; then
+    add_exit_trap _ai_infra_posture_uncordon_all
+    _AI_INFRA_POSTURE_TRAP_SET=1
+  fi
+  kc cordon "${node}" >/dev/null 2>&1 || die "failed to cordon node ${node}"
+  _AI_INFRA_POSTURE_CORDONED+=("${node}")
+  info "cordoned ${node} (uncordon guaranteed: explicit on every path + exit trap)"
+}
+
+_ai_infra_posture_uncordon() {
+  local node="$1" n ok=0
+  local -a kept=()
+  for _ in 1 2 3; do
+    if kc uncordon "${node}" >/dev/null 2>&1; then
+      ok=1
+      break
+    fi
+    sleep 2
+  done
+  if [[ "${ok}" -ne 1 ]]; then
+    # Keep the node in the tracked list so the exit trap retries the uncordon.
+    warn "could not uncordon ${node} after 3 attempts (exit trap will retry)"
+    return 0
+  fi
+  if [[ "${#_AI_INFRA_POSTURE_CORDONED[@]}" -gt 0 ]]; then
+    for n in "${_AI_INFRA_POSTURE_CORDONED[@]}"; do
+      [[ "${n}" == "${node}" ]] || kept+=("${n}")
+    done
+  fi
+  if [[ "${#kept[@]}" -gt 0 ]]; then
+    _AI_INFRA_POSTURE_CORDONED=("${kept[@]}")
+  else
+    _AI_INFRA_POSTURE_CORDONED=()
+  fi
+  info "uncordoned ${node}"
+}
+
+# _ai_infra_pinned_pending_pods - print "node namespace pod" for every Pending,
+# UNSCHEDULED pod whose bound PVC's PV carries a required kubernetes.io/hostname
+# nodeAffinity (a local-path volume pinning the pod to exactly one node). Pods
+# with only unbound PVCs are excluded (WaitForFirstConsumer volumes follow the
+# pod rather than pin it), as are scheduled-but-still-starting Pending pods.
+_ai_infra_pinned_pending_pods() {
+  local ns pod node_name claims claim pv node
+  while IFS='|' read -r ns pod node_name claims; do
+    [[ -n "${ns}" && -n "${pod}" ]] || continue
+    [[ -z "${node_name}" ]] || continue
+    node=''
+    local -a claim_arr=()
+    IFS=' ' read -r -a claim_arr <<<"${claims}" || true
+    if [[ "${#claim_arr[@]}" -gt 0 ]]; then
+      for claim in "${claim_arr[@]}"; do
+        [[ -n "${claim}" ]] || continue
+        pv="$(kc -n "${ns}" get pvc "${claim}" \
+          -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo '')"
+        [[ -n "${pv}" ]] || continue
+        node="$(kc get pv "${pv}" \
+          -o jsonpath='{.spec.nodeAffinity.required.nodeSelectorTerms[*].matchExpressions[?(@.key=="kubernetes.io/hostname")].values[*]}' \
+          2>/dev/null || echo '')"
+        node="${node%% *}"
+        [[ -z "${node}" ]] || break
+      done
+    fi
+    if [[ -n "${node}" ]]; then
+      printf '%s %s %s\n' "${node}" "${ns}" "${pod}"
+    fi
+  done < <(kc get pods -A --field-selector=status.phase=Pending \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{"|"}{.metadata.name}{"|"}{.spec.nodeName}{"|"}{range .spec.volumes[*]}{.persistentVolumeClaim.claimName}{" "}{end}{"\n"}{end}' \
+    2>/dev/null || true)
+  return 0
+}
+
+# _ai_infra_node_has_stranded_pinned <node> - succeed when at least one Pending,
+# unscheduled, PVC-pinned pod is pinned to <node>.
+_ai_infra_node_has_stranded_pinned() {
+  local node="$1"
+  _ai_infra_pinned_pending_pods |
+    awk -v n="${node}" '$1 == n { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+# _ai_infra_respread_target_exists <ns> <pod_selector> <exclude_node> - succeed
+# when at least one Ready, schedulable node other than <exclude_node> hosts no
+# pod matching <pod_selector>: under required hostname anti-affinity an evicted
+# replica needs exactly such a node, otherwise deleting it would only mint a
+# new Pending pod.
+_ai_infra_respread_target_exists() {
+  local ns="$1" psel="$2" exclude="$3" occupied n
+  occupied="$(kc -n "${ns}" get pods -l "${psel}" \
+    -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' 2>/dev/null || true)"
+  while read -r n; do
+    [[ -n "${n}" && "${n}" != "${exclude}" ]] || continue
+    if ! printf '%s\n' "${occupied}" | grep -qx -- "${n}"; then
+      return 0
+    fi
+  done < <(kc get nodes \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"|"}{.spec.unschedulable}{"|"}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}' \
+    2>/dev/null | awk -F'|' '$2 != "true" && $3 == "True" { print $1 }')
+  return 1
+}
+
+# _ai_infra_vacate_node_for_pinned <node> <timeout_s> - evict movable Deployment
+# replicas off <node>, one Deployment at a time in _AI_INFRA_MOVABLE_DEPLOYS
+# order, until the pinned pod(s) stranded on it schedule. Each eviction cordons
+# the node first and waits for the Deployment to re-converge BEFORE uncordoning,
+# so the replacement cannot land back on the node it was evicted from. Dies if
+# every movable replica is exhausted and the pinned pod still cannot schedule.
+_ai_infra_vacate_node_for_pinned() {
+  local node="$1" timeout="$2"
+  local entry ns rest dsel psel deploy victim waited
+
+  for entry in "${_AI_INFRA_MOVABLE_DEPLOYS[@]}"; do
+    if ! _ai_infra_node_has_stranded_pinned "${node}"; then
+      info "no pinned pod remains stranded on ${node}"
+      return 0
+    fi
+    ns="${entry%%|*}"
+    rest="${entry#*|}"
+    dsel="${rest%%|*}"
+    psel="${rest#*|}"
+    victim="$(kc -n "${ns}" get pods -l "${psel}" \
+      --field-selector "spec.nodeName=${node},status.phase=Running" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
+    [[ -n "${victim}" ]] || continue
+    deploy="$(kc -n "${ns}" get deploy -l "${dsel}" \
+      -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo '')"
+    [[ -n "${deploy}" ]] || continue
+    if ! _ai_infra_respread_target_exists "${ns}" "${psel}" "${node}"; then
+      warn "no free Ready node can take a ${ns}/${deploy} replica evicted off ${node}; leaving it"
+      continue
+    fi
+    # Do not fight an in-flight CNPG failover: the evicted replica's replacement
+    # blocks on its database (litellm's wait-for-postgres init; langfuse
+    # web/worker DB connects) until the primary serves.
+    case "${ns}" in
+    litellm) cnpg_wait_serving litellm litellm-pg "${timeout}" || true ;;
+    langfuse) cnpg_wait_serving langfuse-data langfuse-pg "${timeout}" || true ;;
+    esac
+    info "vacating ${ns}/${victim} (deploy/${deploy}) off ${node} to free pinned-pod headroom"
+    _ai_infra_posture_cordon "${node}"
+    if ! kc -n "${ns}" delete pod "${victim}" --wait=false >/dev/null 2>&1; then
+      _ai_infra_posture_uncordon "${node}"
+      die "failed to delete ${ns}/${victim} while vacating ${node}"
+    fi
+    if ! kc -n "${ns}" rollout status "deploy/${deploy}" --timeout="${timeout}s" >/dev/null 2>&1; then
+      _ai_infra_posture_uncordon "${node}"
+      die "deploy/${deploy} (ns ${ns}) did not re-converge within ${timeout}s after vacating ${node}"
+    fi
+    _ai_infra_posture_uncordon "${node}"
+    # The uncordon re-queues unschedulable pods immediately, but give the
+    # scheduler a bounded window (its retry backoff can reach minutes) before
+    # deciding more evictions are needed.
+    info "deploy/${deploy} re-converged off ${node}; waiting for the scheduler to place the pinned pod"
+    waited=0
+    while [[ "${waited}" -lt "${_AI_INFRA_POSTURE_RESCHED_S}" ]]; do
+      _ai_infra_node_has_stranded_pinned "${node}" || break
+      sleep 10
+      waited=$((waited + 10))
+    done
+  done
+
+  if _ai_infra_node_has_stranded_pinned "${node}"; then
+    die "pinned pod(s) on ${node} still unschedulable after vacating every movable replica - genuine capacity/scheduling regression"
+  fi
+}
+
+# restore_movable_posture [timeout_s] - deterministic HA-posture restore (see
+# the section comment above). timeout_s bounds each convergence wait and
+# defaults to HA_POSTURE_TIMEOUT (600s).
+restore_movable_posture() {
+  local timeout="${1:-${HA_POSTURE_TIMEOUT:-600}}"
+  local stranded grace=0 node ns pod rest entry dsel name found
+
+  info "posture restore: checking for PVC-pinned pods stranded Pending"
+  stranded="$(_ai_infra_pinned_pending_pods)"
+  # Transient scheduling passes resolve on their own; only intervene when a
+  # pinned pod stays unscheduled through a short grace window.
+  while [[ -n "${stranded}" && "${grace}" -lt "${_AI_INFRA_POSTURE_GRACE_S}" ]]; do
+    info "pinned pod(s) Pending - allowing self-scheduling grace (${grace}/${_AI_INFRA_POSTURE_GRACE_S}s)"
+    sleep 10
+    grace=$((grace + 10))
+    stranded="$(_ai_infra_pinned_pending_pods)"
+  done
+
+  if [[ -z "${stranded}" ]]; then
+    info "no PVC-pinned pod is stranded Pending; nothing needs moving"
+  else
+    while read -r node ns pod; do
+      [[ -n "${node}" ]] || continue
+      warn "pinned pod ${ns}/${pod} is stranded Pending (its PV pins it to ${node})"
+    done <<<"${stranded}"
+    while read -r node; do
+      [[ -n "${node}" ]] || continue
+      _ai_infra_vacate_node_for_pinned "${node}" "${timeout}"
+    done < <(printf '%s\n' "${stranded}" | awk '{ print $1 }' | sort -u)
+  fi
+
+  # Hard posture assertions - the suite must still fail on a genuine regression.
+  # Every movable Deployment fully available (pod-loss's zero-downtime checks
+  # assume a surviving replica) ...
+  for entry in "${_AI_INFRA_MOVABLE_DEPLOYS[@]}"; do
+    ns="${entry%%|*}"
+    rest="${entry#*|}"
+    dsel="${rest%%|*}"
+    found=0
+    while read -r name; do
+      [[ -n "${name}" ]] || continue
+      found=1
+      kc -n "${ns}" rollout status "deploy/${name}" --timeout="${timeout}s" >/dev/null 2>&1 ||
+        die "deploy/${name} (ns ${ns}) not fully available within ${timeout}s - posture not restored"
+    done < <(kc -n "${ns}" get deploy -l "${dsel}" \
+      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+    [[ "${found}" -eq 1 ]] || info "no movable Deployment matched '${dsel}' in ns ${ns} (skipping)"
+  done
+
+  # ... and every previously-stranded pinned pod back Ready.
+  if [[ -n "${stranded}" ]]; then
+    while read -r node ns pod; do
+      [[ -n "${pod}" ]] || continue
+      info "waiting for pinned pod ${ns}/${pod} to become Ready on ${node} (up to ${timeout}s)"
+      kc -n "${ns}" wait --for=condition=Ready "pod/${pod}" --timeout="${timeout}s" >/dev/null 2>&1 ||
+        die "pinned pod ${ns}/${pod} did not become Ready within ${timeout}s after posture restore"
+    done <<<"${stranded}"
+  fi
+
+  info "HA posture restored: movable Deployments fully available; no PVC-pinned pod stranded"
 }
 
 : "${_AI_INFRA_COMMON_SH_SOURCED}"

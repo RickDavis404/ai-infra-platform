@@ -191,41 +191,21 @@ wait_replicas_reconverge() {
   warn "CNPG replicas did not fully reconverge within window (re-clone may still be running)"
 }
 
-# Restore HA posture for MOVABLE workloads once the lost node has rejoined.
-# Kubernetes never reschedules already-Running pods, so a stateless Deployment
-# replica that migrated onto a surviving node during the outage stays there and
-# keeps that node memory-saturated (litellm carries a 1536Mi anti-meltdown request
-# floor — see kubernetes/litellm/deployment.yaml). A PVC-pinned singleton such as
-# prometheus-server-0 is then permanently unschedulable on its home node: priority 0,
-# so it cannot preempt litellm's ai-infra-gateway PriorityClass (100000). Rolling the
-# movable Deployments here re-spreads their replicas so this phase returns the cluster
-# to full HA posture even when run standalone (it is a separate mise task). Bounded by
-# the RTO.
-restore_movable_posture() {
-  local timeout="${1:-${RTO_TIMEOUT}}"
-  info "restoring HA posture: rolling movable stateless Deployments to re-spread replicas"
-  local entry ns sel name found
-  for entry in \
-    "litellm|app.kubernetes.io/name=litellm" \
-    "langfuse|app.kubernetes.io/component=web" \
-    "langfuse|app.kubernetes.io/component=worker"; do
-    ns="${entry%%|*}"
-    sel="${entry#*|}"
-    found=0
-    while read -r name; do
-      [[ -n "${name}" ]] || continue
-      found=1
-      info "rolling deploy/${name} (ns ${ns}) to rebalance replicas across nodes"
-      kc -n "${ns}" rollout restart "deploy/${name}" >/dev/null 2>&1 ||
-        die "rollout restart deploy/${name} (ns ${ns}) failed"
-      kc -n "${ns}" rollout status "deploy/${name}" --timeout="${timeout}s" >/dev/null 2>&1 ||
-        die "deploy/${name} (ns ${ns}) did not converge within ${timeout}s after posture-restore roll"
-    done < <(kc -n "${ns}" get deploy -l "${sel}" \
-      -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
-    [[ "${found}" -eq 1 ]] || info "no movable Deployment matched '${sel}' in ns ${ns} (skipping)"
-  done
-  info "HA posture restored: movable Deployments re-spread across all Ready nodes"
-}
+# Restore HA posture for MOVABLE workloads once the lost node has rejoined:
+# restore_movable_posture (shared, .config/mise/lib/common.sh). Kubernetes never
+# reschedules already-Running pods, so litellm's displaced replica (1536Mi
+# anti-meltdown request floor + ai-infra-gateway PriorityClass 100000 — see
+# kubernetes/litellm/deployment.yaml) can persist on — or have PREEMPTED
+# priority-0 pods off — the node a PVC-pinned singleton (prometheus-server-0)
+# is pinned to, leaving that singleton Pending forever (priority 0 cannot
+# preempt the gateway back). The shared helper fixes this deterministically:
+# cordon the pinned node, evict movable replicas off it (gated on CNPG serving
+# so replacements boot fast), uncordon on every path (exit-trap safety net),
+# then hard-assert Deployments and the stranded singleton converge. It runs on
+# its own HA_POSTURE_TIMEOUT budget (default 600s), NOT the RTO: posture
+# restore is cleanup after recovery, not part of the recovery-time objective,
+# and one litellm boot (wait-for-postgres + prisma-migrate + startup probe)
+# plus an in-flight litellm-pg failover legitimately exceeds 300s.
 
 assert_ha_posture() {
   info "asserting full replica count / HA posture restored"
@@ -255,7 +235,7 @@ main() {
   limactl start "${LIMA_INSTANCE}" || die "limactl start ${LIMA_INSTANCE} failed"
   assert_node_ready "${K8S_NODE}" "${RTO_TIMEOUT}"
 
-  restore_movable_posture "${RTO_TIMEOUT}"
+  restore_movable_posture
   wait_replicas_reconverge "${RTO_TIMEOUT}"
   verify_pg
   cleanup_pg
