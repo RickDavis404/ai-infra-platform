@@ -363,6 +363,10 @@ url = "https://nodejs.org/dist/v24.18.0/node-v24.18.0-win-x64.zip"
 version = "11.16.0"
 backend = "npm:@mermaid-js/mermaid-cli"
 
+[[tools."npm:@openai/codex"]]
+version = "0.144.0"
+backend = "npm:@openai/codex"
+
 [[tools."pipx:yamllint"]]
 version = "1.38.0"
 backend = "pipx:yamllint"

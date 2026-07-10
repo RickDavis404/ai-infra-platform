@@ -33,17 +33,19 @@ trace or `/status` showing base URL `192.168.105.200:4000`.
 
 ## Agent auth on a fresh Mac (install + login)
 
-The repo does **not** install or authenticate the `claude` / `codex` CLIs — they live on the base
-login PATH and auth **out-of-band per machine, subscription OAuth only (never an API key)**. Install
-mise-independently (do **not** `npm -g` — it entangles the mise-pinned node): Codex via
-`brew install --cask codex`; Claude Code via `curl -fsSL https://claude.ai/install.sh | bash`
+The repo does **not** authenticate the `claude` / `codex` CLIs — they auth **out-of-band per
+machine, subscription OAuth only (never an API key)**. **Codex is now mise-managed in-repo** (an
+`npm:@openai/codex` backend pin in `mise.toml`), so a plain `mise install` provides it — do **not**
+`brew install --cask codex` or `npm -g` it. **Claude Code** stays mise-independent (do **not**
+`npm -g` — it entangles the mise-pinned node): `curl -fsSL https://claude.ai/install.sh | bash`
 (native arm64 → `~/.local/bin`, which must be on PATH). **Log in from OUTSIDE the repo** — mise
 activation makes `cd` into the repo inject the gateway env + `CODEX_HOME`, so never log in via
 `mise exec` / `mise run`:
 
-- **Codex:** `codex login` → ChatGPT OAuth → the **file** `~/.codex/auth.json` (works over headless
-  ssh). **THEN** `mise run init` to wire the repo `CODEX_HOME` symlink — must be **after**
-  `codex login` or init silently skips it.
+- **Codex:** log in from `~` using the mise-managed binary so `CODEX_HOME` stays the real
+  `~/.codex` (not the repo's): `cd ~ && "$(mise --cd <repo-root> which codex)" login` → ChatGPT
+  OAuth → the **file** `~/.codex/auth.json` (works over headless ssh). **THEN** `mise run init` to
+  wire the repo `CODEX_HOME` symlink — must be **after** login or init silently skips it.
 - **Claude:** `/login` → Anthropic Max/Pro OAuth in the **macOS login keychain**. **CRITICAL —
   attended GUI Terminal only, NOT headless ssh:** the keychain must be unlocked in that GUI security
   session, and macOS shows a per-app **keychain ACL prompt** ("claude wants to use confidential

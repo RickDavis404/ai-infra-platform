@@ -82,7 +82,7 @@ kubernetes/**/charts/
 # `codex`, not `.codex`), so this explicit block is required.
 /.config/codex/*
 !/.config/codex/config.toml
-!/.config/codex/model-catalog-codex-defaults-0.142.5.json
+!/.config/codex/model-catalog-codex-defaults-*.json
 
 # --- Lima host mounts (writable virtiofs mount tree per VM; D005) ---
 # ./.local/lima/<vm>/{storage,config,...} — host-visible PVC + service config data
