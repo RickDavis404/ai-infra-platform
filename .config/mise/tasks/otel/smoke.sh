@@ -237,8 +237,13 @@ assert_log_in_loki() {
   for _ in $(seq 1 20); do
     start="$((($(date +%s) - 600) * 1000000000))"
     end="$(($(date +%s) * 1000000000))"
+    # Taxonomy (docs/observability-taxonomy.md): in Loki, `ai.client.name` is
+    # STRUCTURED METADATA, not an index label — the stream selector must use the
+    # indexed `service_name` and filter the metadata afterwards (same pattern as
+    # the shipped claude-code dashboard). `{ai_client_name=...}` as a selector
+    # matches no stream by design under Loki-native OTLP ingestion.
     body="$(gcurl -G "${GRAFANA}/api/datasources/proxy/uid/${UID_LOKI}/loki/api/v1/query_range" \
-      --data-urlencode "query={ai_client_name=\"${AI_CLIENT}\"} |= \"${SESSION_ID}\"" \
+      --data-urlencode "query={service_name=\"${AI_CLIENT}\"} | ai_client_name=\"${AI_CLIENT}\" |= \"${SESSION_ID}\"" \
       --data-urlencode "start=${start}" --data-urlencode "end=${end}" \
       --data-urlencode "limit=5" 2>/dev/null || echo '')"
     if grep -q "${SESSION_ID}" <<<"${body}"; then
