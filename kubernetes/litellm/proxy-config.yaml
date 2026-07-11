@@ -34,8 +34,8 @@ data:
       request_timeout: 600          # local models: 80-100K-token Claude Code context
       stream_timeout: 900           # cold load + prompt-processing before first chunk
       cooldown_time: 30
-      success_callback: ["langfuse_otel"]   # rich trace on every success (SDK-free OTLP → Langfuse /api/public/otel)
-      failure_callback: ["langfuse_otel"]   # rich trace on every failure (level=ERROR); same OTLP exporter
+      success_callback: ["langfuse"]   # rich trace on every success
+      failure_callback: ["langfuse"]   # rich trace on every failure
       callbacks: ["otel", "prometheus", "s3_v2"]   # s3_v2 fires on success AND failure
       langfuse_session_id_header: "X-Claude-Code-Session-Id"
       langfuse_default_tags:
