@@ -74,6 +74,17 @@ trust, `[analytics] enabled=false`, and an inert `litellm_local` provider defini
 collector instead of OpenAI statsig. `CODEX_HOME` is **not** repointed — `~/.codex` is the only
 Codex home.
 
+Also one-time per machine, `mise run codex:install-plugins` installs + enables the Langfuse
+**codex-observability-plugin** into `~/.codex` (idempotent; also offered by `mise run init`). It
+captures codex CLIENT-SIDE — a codex `Stop` hook uploads each turn's rollout to Langfuse as a
+**separate** trace (assistant output, reasoning, tool I/O, subagents, tokens), session-grouped and
+correlated to the gateway trace by codex session id — the practical fix for the Langfuse sink, since
+the gateway cannot capture codex `/responses` streaming output (spend-logs/s3/gateway traces are
+covered by the §8d recovery). Enablement lives in the USER config (`codex plugin add` writes it),
+like `[otel]`; the tracing env (`TRACE_TO_LANGFUSE` + `LANGFUSE_*`) flows via mise. Needs Node ≥ 22
+(repo pins node 24) and a **one-time hook-trust approval** on the first interactive `codex` turn
+(headless uses `codex exec --dangerously-bypass-hook-trust`).
+
 ## Remote / non-interactive shells — apply the mise env explicitly
 
 mise wires the gateway provider env — and prepends the `.config/bin/codex` wrapper to `PATH` — from

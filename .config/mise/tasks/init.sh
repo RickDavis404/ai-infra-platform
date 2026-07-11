@@ -553,6 +553,17 @@ else
   info "Skipped. Run 'mise run codex:global-config' before using bare codex telemetry."
 fi
 
+# --- Codex Langfuse plugin (client-side codex → Langfuse tracing) ----------------
+# Installs + enables the Langfuse codex-observability-plugin into ~/.codex (git clone
+# → needs network). Non-fatal: a plugin-install hiccup must not abort init. One-time
+# hook-trust approval is still required per machine (first interactive `codex` turn).
+if ask_yn "Install the Langfuse codex plugin (client-side codex → Langfuse tracing) into ~/.codex now?" Y; then
+  run_task_or_script codex:install-plugins "${REPO_ROOT}/.config/mise/tasks/codex/install-plugins.sh" ||
+    warn "codex:install-plugins failed (non-fatal) — run 'mise run codex:install-plugins' later; see docs/developer-workflows.md §6.2."
+else
+  info "Skipped. Run 'mise run codex:install-plugins' to enable client-side codex → Langfuse tracing."
+fi
+
 # --- Step 8: next step --------------------------------------------------------
 step 8 "Next"
 info "First-time setup complete."

@@ -357,6 +357,39 @@ backup). Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse V
 wrapper derives the required Basic auth header from the existing Langfuse project API key
 pair and passes only the env-var reference through Codex config.
 
+**Codex → Langfuse client-side tracing (the codex-observability-plugin).** The LiteLLM
+gateway cannot capture codex assistant output over the streaming `/responses` path (the
+`BaseResponsesAPIStreamingIterator` bug — see `planning/langfuse-otel-comparison/`; the §8d
+monkeypatch recovers it into spend-logs/s3/gateway traces). For the **Langfuse** sink
+specifically, the official Langfuse **`tracing` plugin** captures codex **client-side**: a
+codex `Stop` hook re-reads each turn's rollout transcript and uploads a **separate** Langfuse
+trace (model responses incl. reasoning summaries, tool calls with I/O, subagents, token
+usage), **session-grouped** and correlated to the gateway trace by the codex session id. It
+bypasses the gateway streaming gap entirely (the data comes from the on-disk rollout, not the
+gateway response). Wiring is IaC:
+
+- **Install (per machine):** `mise run codex:install-plugins` runs `codex plugin marketplace
+  add langfuse/codex-observability-plugin` + `codex plugin add tracing@codex-observability-plugin`
+  into `~/.codex` (idempotent; timestamped backup; also offered by `mise run init`). `codex
+  plugin add` writes the `[marketplaces.*]` source and `[plugins."tracing@codex-observability-plugin"]
+  enabled = true` into the **user** config — so, like `[otel]`, enablement is managed per
+  machine, not hand-committed into the project `.codex/config.toml`. On the pinned codex
+  `0.144.1` the `hooks`/`plugins` features are stable-on by default (the legacy `[features]
+  plugin_hooks` flag is **removed**), so no feature flag is set. Requires codex ≥ 0.128 (repo
+  pins 0.144.1) and **Node ≥ 22** at hook runtime (repo pins node 24).
+- **Env (via mise):** `TRACE_TO_LANGFUSE=true` + `LANGFUSE_CODEX_MAX_CHARS=67108864` in
+  `conf.d/10-env.toml`; `LANGFUSE_BASE_URL` (Langfuse VIP) already templated there; the
+  `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` pair (already fnox-sealed for the MCP header) is
+  exported by `secret-env.sh`. The plugin fails open (a tracing error never blocks codex).
+- **Hook trust (one-time per machine, like the Claude keychain ACL):** codex runs an enabled
+  hook only after its source is trusted. The **first interactive `codex` turn** in the repo
+  prompts to trust the Langfuse `Stop` hook — approve once (persists). Headless automation
+  passes `codex exec --dangerously-bypass-hook-trust` (the hook source is the pinned, committed
+  plugin). Until trusted/bypassed the hook silently does not fire. Note: `mise run codex:smoke`
+  runs `codex exec --ignore-user-config`, so it does **not** load the plugin — it verifies
+  gateway routing only; plugin capture is exercised by a real repo-dir interactive turn (or the
+  bypass flag).
+
 ```mermaid
 flowchart LR
     subgraph CFG["Mac host agent config"]

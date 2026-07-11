@@ -97,6 +97,18 @@ CC_LANGFUSE_MAX_CHARS = "67108864"
 LANGFUSE_HOST         = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
 LANGFUSE_MCP_READ_ONLY = "true"
 
+# Langfuse codex-observability-plugin — CLIENT-SIDE codex capture (a codex `Stop` hook
+# reads each turn's rollout and uploads it to Langfuse as a SEPARATE trace, correlated
+# to the gateway trace by codex session id). Install per-machine with
+# `mise run codex:install-plugins`; these env knobs are read by the plugin's hook:
+#   - LANGFUSE_BASE_URL (above) + LANGFUSE_PUBLIC_KEY/SECRET_KEY (secret-env.sh) auth the upload
+#   - TRACE_TO_LANGFUSE opts the plugin in (default off)
+#   - LANGFUSE_CODEX_MAX_CHARS caps per-field capture, raised to the 64 MiB max-capture
+#     posture (plugin default is 20000), matching CC_LANGFUSE_MAX_CHARS for Claude.
+# Inert unless the plugin is installed AND its Stop hook is trusted (one-time per machine).
+TRACE_TO_LANGFUSE        = "true"
+LANGFUSE_CODEX_MAX_CHARS = "67108864"
+
 # Grafana MCP (URL at the grafana VIP; admin USERNAME non-secret, password via fnox).
 GRAFANA_URL      = "http://{{env.AI_INFRA_GRAFANA_VIP}}:3000"
 GRAFANA_USERNAME = "admin"
