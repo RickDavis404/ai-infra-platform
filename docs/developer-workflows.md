@@ -259,9 +259,45 @@ expanded steps, all via mise tasks (full demo in
    `claude-code`, `smoke-test`) via the idempotent key-mint Job and complete the
    headless Langfuse bootstrap.
 4. **Reach the UIs.** Browse the service VIPs directly (no port-forward): LiteLLM
-   `192.168.105.200:4000`, Langfuse `192.168.105.201:3000`, Grafana
-   `192.168.105.202:3000`, OTLP `192.168.105.203:4318`, Hubble `192.168.105.204`.
-   The `port-forward:*` tasks bind `127.0.0.1` as a non-HA fallback. All require credentials.
+   `192.168.105.200:4000` (append `/ui` for the admin console), Langfuse
+   `192.168.105.201:3000`, Grafana `192.168.105.202:3000`, OTLP `192.168.105.203:4318`,
+   Hubble `192.168.105.204`. The `port-forward:*` tasks bind `127.0.0.1` as a non-HA
+   fallback. **All require credentials** (below).
+
+**Reaching a remote/headless cluster host over SSH.** When the cluster runs on another machine
+(its VIPs are not on your L2), tunnel the three UI VIPs and browse `localhost` — verified live
+end-to-end against the remote host (open + curl + teardown all confirmed):
+
+```sh
+# open: three -L forwards on one ssh process
+ssh -f -N -L 24000:192.168.105.200:4000 -L 23000:192.168.105.201:3000 \
+       -L 22000:192.168.105.202:3000 <user>@<cluster-host>
+# health-check each leg
+curl -s  http://localhost:24000/health/liveliness                       # -> I'm alive!
+curl -s  http://localhost:23000/api/public/health                       # -> {"status":"OK","version":"3.210.0"}
+curl -so /dev/null -w '%{http_code}\n' http://localhost:22000/api/health # -> 200
+# tear down (kills exactly this forwarding process; frees all three ports)
+pkill -f '24000:192.168.105.200:4000'
+```
+
+**Credentials** (run on the cluster host; the secrets live in non-obvious namespaces). `kubectl`
+is only on `PATH` at an interactive mise prompt — over a bare non-interactive ssh use the
+absolute `"$(mise which kubectl)"` with `--kubeconfig "$KUBECONFIG"`:
+
+```sh
+# Grafana — user 'admin', http://<grafana>:3000  (secret is in ns 'lgtm', NOT grafana/monitoring)
+kubectl get secret grafana-admin -n lgtm -o jsonpath='{.data.admin-password}' | base64 -d; echo
+# LiteLLM — admin console http://<litellm>:4000/ui  — username 'admin', password = the master key:
+kubectl get secret litellm-app-secrets -n litellm -o jsonpath='{.data.LITELLM_MASTER_KEY}' | base64 -d; echo
+# Langfuse — http://<langfuse>:3000 — email is the literal admin@ai-infra-platform.example:
+kubectl get secret langfuse-app-secrets -n langfuse -o jsonpath='{.data.init-user-password}' | base64 -d; echo
+```
+
+Login notes: the LiteLLM UI has **no** separate `UI_USERNAME`/`UI_PASSWORD` — the master key
+*is* the UI password (username `admin`); reach it at `/ui` (bare `/` is the API root). The
+Langfuse login **email** is a plaintext literal in `kubernetes/langfuse/values.yaml`
+(`LANGFUSE_INIT_USER_EMAIL`), not a secret — only the password is secret-backed
+(`init-user-password`, key name drops the `LANGFUSE_` prefix).
 
 > **macOS 26 — a hands-off `mise run up` must keep its launching terminal/ssh
 > session alive for the whole run.** macOS Local Network privacy denies *detached*
@@ -389,6 +425,39 @@ gateway response). Wiring is IaC:
   runs `codex exec --ignore-user-config`, so it does **not** load the plugin — it verifies
   gateway routing only; plugin capture is exercised by a real repo-dir interactive turn (or the
   bypass flag).
+
+**Gateway Langfuse callback + codex output capture (posture).** The gateway logs Langfuse via
+the **classic `langfuse`** success/failure callback (`kubernetes/litellm/proxy-config.yaml`
+`success_callback: ["langfuse"]`), **not** `langfuse_otel`. The `langfuse_otel` switch was
+trialed end-to-end and **reverted**: it did not fix codex output *and* it regressed signals the
+classic path emits for free — per-generation TTFT (`completion_start_time`) and
+`langfuse_default_tags` are classic-only in LiteLLM and the OTLP exporter never sets them. The
+codex assistant text is empty in `standard_logging_object["response"]` because LiteLLM's
+real-streaming `BaseResponsesAPIStreamingIterator._process_chunk` stores ChatGPT's
+empty-`output` terminal event and never runs the SSE output-recovery its own *buffered* path
+uses — a LiteLLM bug (intended for upstream filing), proven independent of routing (wildcard vs
+explicit model_list) and auth (client-forwarded vs server-held device-flow token). The committed
+**§8d** sitecustomize (`kubernetes/litellm/pylogging-config.yaml`) reconstructs `output` at the
+streaming-iterator layer — accumulating `output_item.done`/`output_text.done` events and
+backfilling the empty terminal event via LiteLLM's own `sse_output_recovery` helpers — so **every
+gateway sink** (spend-logs, s3_v2, the classic Langfuse trace) captures codex output at the
+source; a co-located **§8d-classic** hook unwraps it onto the Langfuse generation. The
+codex-observability-plugin above is the complementary **client-side** Langfuse path. Full
+analysis lives in `planning/langfuse-otel-comparison/` (`DEBUG-codex-capture.md`,
+`OFFICIAL-CHATGPT-PASSTHROUGH-TEST.md` — local, gitignored).
+
+**Future ticket — codex↔LiteLLM WebSocket transport.** An empirical probe
+(`planning/langfuse-otel-comparison/WEBSOCKET-PROBE.md`, gitignored) confirmed that flipping the
+custom provider's `supports_websockets=true` makes codex open a real WS upgrade to
+`ws://192.168.105.200:4000/v1/responses` (LiteLLM's native Responses-API WS route). LiteLLM
+**403s** the handshake because its WS-auth reads the proxy key **only** from `Authorization` —
+which in our two-header split carries the *ChatGPT* OAuth JWT, while the virtual key rides in
+`x-litellm-api-key` (which WS-auth never reads); codex then **falls back to HTTP-SSE gracefully**
+(non-fatal, ~42 ms). Enabling WS is a bounded project, not a flag flip: a LiteLLM WS-auth patch
+to accept `x-litellm-api-key` (without consuming `Authorization`) + a managed-WS §8b
+header-forwarding re-confirmation + a codex↔LiteLLM wire-protocol compat pass. Keep
+`supports_websockets=false` until all three close; WS is a transport-efficiency change, **not** a
+capture fix (§8d still required on the WS path).
 
 ```mermaid
 flowchart LR
