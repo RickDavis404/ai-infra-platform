@@ -47,6 +47,14 @@ info "launching codex (repo wrapper) against the LiteLLM gateway VIP (${AI_INFRA
 # `codex -c key=value` parses value as TOML (string values inner-quoted; inline tables
 # use TOML inline syntax). The spend-logs-metadata header is a JSON string whose inner
 # double-quotes are TOML-escaped (\\\" -> \") so LiteLLM tags the spend-log row.
+#
+# grafana MCP: inject the FULL definition (command/args/GRAFANA_URL + creds), not just the
+# secret env. CODEX_HOME is retired, so codex loads the USER config (~/.codex/config.toml),
+# which does NOT carry the grafana command/args — those live only in the committed
+# .codex/config.toml, a project layer codex no longer reads. Injecting env-only would leave
+# a partial `[mcp_servers.grafana]` table with no transport -> codex aborts config load with
+# "invalid transport in mcp_servers.grafana". langfuse_http/litellm_local are already
+# defined in full here for the same reason.
 exec "${real_codex}" \
   --config model="\"${model}\"" \
   --config model_provider='"litellm_local"' \
@@ -57,6 +65,9 @@ exec "${real_codex}" \
   --config 'model_providers.litellm_local.supports_websockets=false' \
   --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
   --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
+  --config 'mcp_servers.grafana.command="uvx"' \
+  --config 'mcp_servers.grafana.args=["mcp-grafana", "--disable-write"]' \
+  --config "mcp_servers.grafana.env.GRAFANA_URL=\"http://${AI_INFRA_GRAFANA_VIP:-192.168.105.202}:3000\"" \
   --config "mcp_servers.grafana.env.GRAFANA_USERNAME=\"${GRAFANA_USERNAME}\"" \
   --config "mcp_servers.grafana.env.GRAFANA_PASSWORD=\"${GRAFANA_PASSWORD}\"" \
   --config "mcp_servers.langfuse_http.url=\"http://${AI_INFRA_LANGFUSE_VIP:-192.168.105.201}:3000/api/public/mcp\"" \
