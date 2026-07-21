@@ -10,7 +10,7 @@ store in the data plane and the biggest HA win from moving to three real nodes.
 |--------------|--------------------------------------------------|
 | Chart        | `seaweedfs`                                      |
 | Repo         | `https://seaweedfs.github.io/seaweedfs/helm`     |
-| Version      | **`4.39.0`** (pinned)                            |
+| Version      | **`4.40.0`** (pinned)                            |
 | Release name | `langfuse-seaweedfs`                             |
 | Namespace    | `langfuse-data`                                  |
 | Values       | `values.yaml`                                    |

@@ -51,10 +51,10 @@ spec:
               # The CHK operator does NOT default a Keeper image (unlike the CHI),
               # so it MUST be set explicitly or the StatefulSet pod is invalid
               # ("spec.containers[0].image: Required value"). Pinned to match the
-              # CHI's clickhouse-server 26.3.17.4 (clickhouse-keeper ships from the
+              # CHI's clickhouse-server 26.3.17.56 (clickhouse-keeper ships from the
               # same release line / registry).
             - name: clickhouse-keeper
-              image: clickhouse/clickhouse-keeper:26.3.17.4@sha256:fdac42579b7279a51a42c5546e7f01d38a756de742de572688fcc595c85602e6
+              image: clickhouse/clickhouse-keeper:26.3.17.56@sha256:fa87250e62538bca762ba51fef3ddf4d0114becaad4fa0fb9bc3e7982168e916
               # Pinned tag on a Docker Hub image: IfNotPresent so idempotent
               # re-applies don't re-pull and trip docker.io's anonymous pull-rate
               # limit (HTTP 429).
