@@ -2,12 +2,12 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Cilium CNI, inlined via Helm and rendered with `kustomize build --enable-helm`.
-# Pin is exact (1.20.0-pre.4, pre-release); it does not float. Re-test IPAM, kubeProxyReplacement, and
+# Pin is exact (1.20.0-rc.0, pre-release); it does not float. Re-test IPAM, kubeProxyReplacement, and
 # (if enabled) the L7 knobs on any version bump. See README.md for provenance.
 helmCharts:
   - name: cilium
     repo: https://helm.cilium.io
-    version: 1.20.0-pre.4
+    version: 1.20.0-rc.0
     releaseName: cilium
     namespace: kube-system
     valuesFile: values.yaml
