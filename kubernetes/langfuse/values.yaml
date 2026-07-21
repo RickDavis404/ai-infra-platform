@@ -27,7 +27,7 @@ langfuse:
   # `langfuse.web/worker.image.pullPolicy | default langfuse.image.pullPolicy`.
   image:
     pullPolicy: IfNotPresent
-    # Runs ahead of chart 1.5.40 appVersion 3.212.0 (KEEP override; user-approved); REMOVE when a chart bundles >=3.222.x.
+    # Runs ahead of chart 1.5.40 appVersion 3.221.1 (KEEP override; user-approved); REMOVE when a chart bundles >=3.222.x.
     tag: "3.222.0"
   logging:
     level: info

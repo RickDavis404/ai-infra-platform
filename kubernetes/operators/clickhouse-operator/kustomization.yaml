@@ -5,7 +5,7 @@ kind: Kustomization
 # `kustomize build --enable-helm`. The pin is exact (0.27.1) and does not float; the
 # operator does not bundle a server — the CHI / CHK images it reconciles (in
 # `kubernetes/langfuse-data/clickhouse/`) are pinned operator-independently at
-# 26.3.17.4 (26.3 LTS). See README.md for provenance and the watch-all-namespaces
+# 26.3.17.56 (26.3 LTS). See README.md for provenance and the watch-all-namespaces
 # override.
 #
 # `includeCRDs: true` renders all four ClickHouse CRDs into this overlay so they

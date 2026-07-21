@@ -3,7 +3,7 @@ kind: Kustomization
 
 # Langfuse web + worker (v3 split architecture), inlined via Helm and rendered
 # with `kustomize build --enable-helm`. The official langfuse-k8s chart is pinned
-# exactly at 1.5.40 (appVersion 3.212.x line); it does not float. All four bundled
+# exactly at 1.5.40 (appVersion 3.221.x line); it does not float. All four bundled
 # data subcharts (postgresql / clickhouse / redis / s3) are disabled in values.yaml
 # and Langfuse is pointed at the externalized stores in the langfuse-data namespace.
 # Re-verify the values schema against the pinned chart before any version bump.

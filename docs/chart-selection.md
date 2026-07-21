@@ -26,7 +26,7 @@ not what an upstream chart merely declares for an unused option.
 | ClickHouse (DB) | Altinity `ClickHouseInstallation` / `ClickHouseKeeperInstallation` CRs | n/a — operator-managed | — | ClickHouse 26.3.17.56 (26.3 LTS) | operator-managed; no bundled image |
 | Valkey | `valkey` (valkey-io / valkey-helm) | `https://valkey.io/valkey-helm` | 0.10.0 | 9.1.0 | Valkey-project community chart — the correct Bitnami-Redis replacement; no `dependencies:` block |
 | SeaweedFS (S3) | `seaweedfs` | `https://seaweedfs.github.io/seaweedfs/helm` | 4.40.0 | 4.40 | project-official, in-monorepo; no Bitnami |
-| Langfuse (web + worker) | `langfuse` | `https://github.com/langfuse/langfuse-k8s` | 1.5.40 | 3.212.0 (image overridden to 3.222.0) | vendor-official; all bundled subcharts `deploy: false` (see §2) |
+| Langfuse (web + worker) | `langfuse` | `https://github.com/langfuse/langfuse-k8s` | 1.5.40 | 3.221.1 (image overridden to 3.222.0) | vendor-official; all bundled subcharts `deploy: false` (see §2) |
 | LiteLLM gateway | **RAW manifests** (image only) | image registry only — chart NOT used | — | `ghcr.io/berriai/litellm-database:v1.93.0` | official chart carries Bitnami pg/redis; raw manifests avoid it (see §4) |
 | Grafana | `grafana` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 12.7.3 | 13.1.1 | community-maintained, Grafana-endorsed fork (see §5) |
 | Loki | `loki` | `https://grafana-community.github.io/helm-charts` (MIGRATED) | 18.5.1 | 3.7.x | community OSS fork; bundled MinIO is official `charts.min.io`, disabled |
@@ -37,7 +37,7 @@ not what an upstream chart merely declares for an unused option.
 | Grafana Alloy | `alloy` (from `grafana/alloy`) | `https://grafana.github.io/helm-charts` | 1.10.1 | v1.18.0 | Grafana Labs first-party; published from the Alloy repo (NOT grafana-community) |
 
 Operator tooling and CLIs are pinned separately in the root `mise.toml` `[tools]`
-(age, fnox, kubectl 1.36.2, kustomize 5.8.1, helm 4.2.3, cilium-cli 0.19.5, plus
+(age, fnox, kubectl 1.36.2, kustomize 5.8.1, helm 4.2.3, cilium-cli 0.19.6, plus
 node/python/ripgrep + `npm:@mermaid-js/mermaid-cli` for the docs toolchain and the
 lint/format set). The kubeadm Kubernetes version is pinned in the Lima
 `k8s-cilium` template, identical on all three control-plane nodes; **kube-vip** is

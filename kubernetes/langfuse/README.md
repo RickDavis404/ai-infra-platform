@@ -17,7 +17,7 @@ kustomize `helmCharts:` and rendered with `kustomize build --enable-helm` — ne
 | Chart | `langfuse` |
 | Repo | `https://langfuse.github.io/langfuse-k8s` |
 | Version (pinned exactly) | `1.5.40` |
-| appVersion | `3.212.0` |
+| appVersion | `3.221.1` |
 | releaseName | `langfuse` |
 | Namespace | `langfuse` |
 | Values | `values.yaml` |
