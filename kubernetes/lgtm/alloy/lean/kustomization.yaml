@@ -12,14 +12,14 @@ kind: Kustomization
 #
 # The `../` value-file references are ABOVE this root, so renders pass
 # `--load-restrictor LoadRestrictionsNone` (apply.sh / render-all.sh / diff.sh /
-# down.sh). Chart pin MUST equal the base (alloy 1.10.0); a Renovate bump to
+# down.sh). Chart pin MUST equal the base (alloy 1.10.1); a Renovate bump to
 # ../kustomization.yaml will NOT touch this copy — keep them in lock-step
 # (planning §5 helm-version drift). Referenced by lgtm/lean, not by apply.sh
 # directly (profile selection happens at the lgtm unit level).
 helmCharts:
 - name: alloy
   repo: https://grafana.github.io/helm-charts
-  version: 1.10.0
+  version: 1.10.1
   releaseName: alloy
   namespace: lgtm
   valuesFile: ../values.yaml

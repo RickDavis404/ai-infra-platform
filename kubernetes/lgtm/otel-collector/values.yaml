@@ -1,5 +1,5 @@
 # OpenTelemetry Collector — in-cluster OTLP gateway (§13.2.1).
-# Chart: open-telemetry/opentelemetry-collector 0.164.1, releaseName otel-collector,
+# Chart: open-telemetry/opentelemetry-collector 0.165.0, releaseName otel-collector,
 # namespace lgtm. Rendered via `kustomize build --enable-helm`.
 #
 # Role split (§13.2): THIS collector is the single OTLP gateway for every
@@ -15,9 +15,10 @@ mode: daemonset
 # ship in the slimmer `otel/opentelemetry-collector-k8s` image (that image only
 # carries otlp/otlphttp/debug/... exporters, so it fails to start with
 # `exporters unknown type: "prometheusremotewrite"`). The contrib image IS published
-# on Docker Hub at 0.156.0 (confirmed present), so pin to it. chart 0.164.1's
-# appVersion is only 0.155.0, so an explicit tag is REQUIRED to run the newer
-# 0.156.0 contrib image.
+# on Docker Hub at 0.156.0 (confirmed present), so pin to it. chart 0.165.0's
+# appVersion is 0.156.0, so the tag now matches the chart default; the explicit
+# override remains REQUIRED to switch the repository to the contrib image (the
+# chart-default slim k8s image lacks these exporters/processors).
 image:
   repository: otel/opentelemetry-collector-contrib
   pullPolicy: IfNotPresent

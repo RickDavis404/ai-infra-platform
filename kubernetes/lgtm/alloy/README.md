@@ -7,7 +7,7 @@ own pod logs to Loki. It is **not** the general container-log path.
 |---|---|
 | Chart | `alloy` |
 | Repo | `https://grafana.github.io/helm-charts` |
-| Version (pinned) | `1.10.0` |
+| Version (pinned) | `1.10.1` |
 | Release | `alloy` |
 | Namespace | `lgtm` |
 | Topology | DaemonSet, tiny footprint |
@@ -18,8 +18,8 @@ own pod logs to Loki. It is **not** the general container-log path.
 kustomize build --enable-helm kubernetes/lgtm/alloy | kubectl apply -f -
 ```
 
-The chart pin (`1.10.0`) is exact and does not float; the Alloy image tag is pinned
-to `v1.17.1` (an explicit `image.tag` override — the chart 1.10.0 default is
+The chart pin (`1.10.1`) is exact and does not float; the Alloy image tag is pinned
+to `v1.18.0` (an explicit `image.tag` override — the chart 1.10.1 default is
 unchanged). Namespace is `lgtm` (decision D001).
 
 ## Why Alloy exists (and what it is NOT)

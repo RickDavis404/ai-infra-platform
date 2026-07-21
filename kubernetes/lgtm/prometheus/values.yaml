@@ -1,5 +1,5 @@
 # PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
-# Prometheus — standalone (prometheus-community/prometheus 29.14.0), namespace lgtm.
+# Prometheus — standalone (prometheus-community/prometheus 29.18.0), namespace lgtm.
 # StatefulSet, 1 replica, served under /prometheus.
 # Rendered via `kustomize build --enable-helm`.
 #
@@ -116,7 +116,7 @@ scrapeConfigs:
   # the kube-apiserver ServiceMonitor, kubernetes-nodes{,-cadvisor} the kubelet +
   # cAdvisor ServiceMonitor, and the service-endpoints/pods/services annotation jobs
   # re-discover everything Alloy already covers. The chart ships all of these
-  # `enabled: true` by default (prometheus-29.14.0/values.yaml), so each must be
+  # `enabled: true` by default (prometheus-29.18.0/values.yaml), so each must be
   # turned off explicitly. Only the self-scrape `prometheus` job above stays on.
   kubernetes-api-servers:
     enabled: false

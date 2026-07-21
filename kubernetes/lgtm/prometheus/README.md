@@ -8,7 +8,7 @@ metrics-generator.
 |---|---|
 | Chart | `prometheus` |
 | Repo | `https://prometheus-community.github.io/helm-charts` |
-| Version (pinned) | `29.14.0` |
+| Version (pinned) | `29.18.0` |
 | Release | `prometheus` |
 | Namespace | `lgtm` |
 | Topology | StatefulSet, 2 replicas, hard anti-affinity, `/prometheus` route-prefix |
@@ -19,7 +19,7 @@ metrics-generator.
 kustomize build --enable-helm kubernetes/lgtm/prometheus | kubectl apply -f -
 ```
 
-The pin (`29.14.0`) is exact and does not float. Namespace is `lgtm` (decision
+The pin (`29.18.0`) is exact and does not float. Namespace is `lgtm` (decision
 D001); the OTel Collector remote-writes to
 `http://prometheus-server.lgtm.svc.cluster.local/prometheus/api/v1/write`.
 

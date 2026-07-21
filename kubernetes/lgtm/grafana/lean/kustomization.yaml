@@ -13,7 +13,7 @@ kind: Kustomization
 #
 # The `../` value/file references are ABOVE this root, so renders pass
 # `--load-restrictor LoadRestrictionsNone`. Chart pin, releaseName, generatorOptions
-# and namespace MUST match ../kustomization.yaml (grafana 12.7.2); a Renovate bump to
+# and namespace MUST match ../kustomization.yaml (grafana 12.7.3); a Renovate bump to
 # the base will NOT touch this copy — keep them in lock-step (planning §5).
 namespace: lgtm
 
@@ -23,7 +23,7 @@ resources:
 helmCharts:
   - name: grafana
     repo: https://grafana-community.github.io/helm-charts
-    version: 12.7.2
+    version: 12.7.3
     releaseName: grafana
     namespace: lgtm
     valuesFile: ../values.yaml

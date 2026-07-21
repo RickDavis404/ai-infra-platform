@@ -1,5 +1,5 @@
 # PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
-# loki/loki 18.4.3 (grafana-community.github.io/helm-charts)
+# loki/loki 18.5.1 (grafana-community.github.io/helm-charts)
 # SimpleScalable on SeaweedFS S3. read/write/backend/gateway = 2; RF 2; tsdb/v13.
 # 90-day retention enforced by the compactor on the backend target.
 # HA DEFAULT here; the AI_INFRA_PROFILE=lean overlay (loki/lean/, via
