@@ -61,11 +61,11 @@ spec:
       securityContext:
         # NOTE: runAsNonRoot/runAsUser are intentionally NOT set at the POD level.
         # The pod-level runAsNonRoot:true is a hard gate the kubelet applies to EVERY
-        # container — a container-level override cannot relax it — which blocks the
-        # stage-prisma-cache init that must run as root to read the image's
-        # 0700-mode /root/.cache. Instead, non-root is enforced per-container on the
-        # workload containers (wait-for-postgres + litellm), so the staging init can
-        # run as root while the actual workload stays uid 1000.
+        # container — a container-level override cannot relax it — which would block the
+        # prisma-migrate init that runs as root (HOME=/root, the image's 0700 root home,
+        # must be writable for prisma's migration-engine scratch). Instead, non-root is
+        # enforced per-container on the workload containers (wait-for-postgres + litellm),
+        # so the root migrate init is permitted while the actual workload stays uid 1000.
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
@@ -113,8 +113,8 @@ spec:
         # Running `prisma migrate deploy` here, as a dedicated init container, has NO
         # such timeout, so the full migration set applies ONCE, cleanly, before the
         # app connects. Idempotent on a warm DB (deploy is a no-op when current). Runs
-        # as root (like stage-prisma-cache) to use the image's baked prisma engine
-        # under the 0700-mode /root/.cache.
+        # as root so HOME=/root is writable for prisma's migration-engine scratch (the
+        # engine binary is read from the image's world-readable /opt/prisma tree).
         - name: prisma-migrate
           image: ghcr.io/berriai/litellm-database:v1.93.0@sha256:72360d8bd5602faa49be5098a8ac3dd069d9fb74503d6bd014242d96dc753e43
           imagePullPolicy: IfNotPresent
@@ -137,7 +137,10 @@ spec:
                 secretKeyRef:
                   name: litellm-pg-app
                   key: uri
-            # HOME=/root so prisma resolves the baked engine under /root/.cache.
+            # HOME=/root gives prisma a writable home for its migration-engine scratch
+            # (the container runs as root, so the image's 0700 /root is writable). The
+            # query-engine binary itself is read from the image's world-readable
+            # /opt/prisma tree in v1.93.0 (no /root/.cache staging needed).
             - name: HOME
               value: /root
           resources:
@@ -153,63 +156,15 @@ spec:
               cpu: 1000m
               memory: 2Gi
           securityContext:
-            # Root ONLY to read the image's 0700-mode /root/.cache baked prisma engine
-            # (same rationale as stage-prisma-cache). No privilege escalation, all caps
-            # dropped. readOnlyRootFilesystem MUST be false: prisma links + SPAWNS its
-            # migration engine and writes scratch state at runtime.
+            # Root so HOME=/root (the image's 0700 root home) is writable for prisma's
+            # migration-engine scratch; the engine binary itself lives in the
+            # world-readable /opt/prisma tree (v1.93.0). No privilege escalation, all
+            # caps dropped. readOnlyRootFilesystem MUST be false: prisma links + SPAWNS
+            # its migration engine and writes scratch state at runtime.
             runAsNonRoot: false
             runAsUser: 0
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: false
-            capabilities:
-              drop:
-                - ALL
-        # Make the baked prisma engine readable by the non-root workload.
-        # The litellm-database image bakes the prisma query-engine under
-        # `/root/.cache/prisma-python/...`, and the generated prisma client's
-        # BINARY_PATHS (client.py) hard-code THAT absolute path — it is authoritative
-        # at runtime and is NOT overridable via PRISMA_QUERY_ENGINE_BINARY /
-        # PRISMA_HOME_DIR (verified). `/root` is mode 0700, so the workload's uid 1000
-        # cannot traverse it -> `PermissionError` -> prisma `NotConnectedError` ->
-        # `Application startup failed. Exiting.` -> CrashLoop. Fix: this init
-        # container (root, same image) copies the entire baked `/root/.cache` into the
-        # `root-home` emptyDir (staged at /staged); the MAIN container mounts that same
-        # volume AT `/root`, so (a) the mountpoint dir is group/world-traversable
-        # (emptyDir + fsGroup, not 0700) and (b) `/root/.cache/...` now contains a
-        # uid-1000-readable copy at exactly the path BINARY_PATHS expects.
-        - name: stage-prisma-cache
-          image: ghcr.io/berriai/litellm-database:v1.93.0@sha256:72360d8bd5602faa49be5098a8ac3dd069d9fb74503d6bd014242d96dc753e43
-          imagePullPolicy: IfNotPresent
-          command:
-            - sh
-            - -c
-            - |
-              set -eu
-              # Reproduce the baked $HOME/.cache under the staged volume root.
-              mkdir -p /staged/.cache
-              cp -a /root/.cache/. /staged/.cache/
-              chmod -R a+rX /staged/.cache
-              echo "staged /root/.cache -> root-home volume"
-          volumeMounts:
-            - name: root-home
-              mountPath: /staged
-          resources:
-            requests:
-              cpu: 25m
-              memory: 32Mi
-            limits:
-              cpu: 250m
-              memory: 256Mi
-          securityContext:
-            # Runs as root ONLY to read the image's 0700-mode /root/.cache and copy
-            # the baked prisma engine into the shared emptyDir. No privilege
-            # escalation, all caps dropped, read-only rootfs. The pod no longer sets a
-            # pod-level runAsNonRoot gate (see pod securityContext note), so this is
-            # permitted; every OTHER container pins runAsNonRoot:true + uid 1000.
-            runAsNonRoot: false
-            runAsUser: 0
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -300,11 +255,11 @@ spec:
               value: "True"
             - name: PYTHONPATH
               value: /etc/litellm-pylogging
-            # HOME stays /root so prisma resolves the SAME `/root/.cache/...` paths the
-            # generated BINARY_PATHS hard-code; the `root-home` volume (init-populated)
-            # is mounted at /root and IS writable + uid-1000-readable, unlike the
-            # image's 0700 /root. (Do NOT repoint HOME away from /root or prisma's
-            # baked BINARY_PATHS and the live HOME diverge.)
+            # HOME=/root gives the non-root workload a writable home: the `root-home`
+            # emptyDir is mounted at /root (writable + uid-1000-traversable, unlike the
+            # image's 0700 /root). In v1.93.0 the prisma query-engine is read from the
+            # image's world-readable /opt/prisma tree (BINARY_PATHS point there), so no
+            # /root/.cache staging is needed — /root just needs to be a writable $HOME.
             - name: HOME
               value: /root
             # OTLP/HTTP to the in-cluster OTel Collector in the lgtm plane. v7
@@ -385,8 +340,8 @@ spec:
             - name: tmp
               mountPath: /tmp
             # Mounted at /root (HOME): a writable, uid-1000-traversable replacement for
-            # the image's 0700 /root, pre-populated by stage-prisma-cache with the
-            # baked prisma engine cache at /root/.cache/... (where BINARY_PATHS point).
+            # the image's 0700 /root, giving the non-root workload a writable $HOME.
+            # (v1.93.0 reads the prisma engine from /opt/prisma, so this starts empty.)
             - name: root-home
               mountPath: /root
       volumes:
@@ -404,8 +359,8 @@ spec:
                 path: sitecustomize.py
         - name: tmp
           emptyDir: {}
-        # Writable /root (HOME) for the main container, pre-populated by the
-        # stage-prisma-cache initContainer with the image's baked /root/.cache so the
-        # prisma engine is uid-1000-readable at the BINARY_PATHS-expected location.
+        # Writable /root (HOME) for the main container: an empty emptyDir so the
+        # non-root workload has a writable $HOME. (v1.93.0 reads the prisma engine from
+        # the image's world-readable /opt/prisma tree, so no pre-population is needed.)
         - name: root-home
           emptyDir: {}
