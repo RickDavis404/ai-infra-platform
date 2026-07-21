@@ -116,7 +116,7 @@ spec:
         # as root (like stage-prisma-cache) to use the image's baked prisma engine
         # under the 0700-mode /root/.cache.
         - name: prisma-migrate
-          image: ghcr.io/berriai/litellm-database:v1.92.0-rc.2@sha256:7669085e87037507f4cc7a435bf035f71798a60434b751c12d782e27e94f4d74
+          image: ghcr.io/berriai/litellm-database:v1.93.0@sha256:72360d8bd5602faa49be5098a8ac3dd069d9fb74503d6bd014242d96dc753e43
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -178,7 +178,7 @@ spec:
         # (emptyDir + fsGroup, not 0700) and (b) `/root/.cache/...` now contains a
         # uid-1000-readable copy at exactly the path BINARY_PATHS expects.
         - name: stage-prisma-cache
-          image: ghcr.io/berriai/litellm-database:v1.92.0-rc.2@sha256:7669085e87037507f4cc7a435bf035f71798a60434b751c12d782e27e94f4d74
+          image: ghcr.io/berriai/litellm-database:v1.93.0@sha256:72360d8bd5602faa49be5098a8ac3dd069d9fb74503d6bd014242d96dc753e43
           imagePullPolicy: IfNotPresent
           command:
             - sh
@@ -215,7 +215,7 @@ spec:
                 - ALL
       containers:
         - name: litellm
-          image: ghcr.io/berriai/litellm-database:v1.92.0-rc.2@sha256:7669085e87037507f4cc7a435bf035f71798a60434b751c12d782e27e94f4d74
+          image: ghcr.io/berriai/litellm-database:v1.93.0@sha256:72360d8bd5602faa49be5098a8ac3dd069d9fb74503d6bd014242d96dc753e43
           imagePullPolicy: IfNotPresent
           args:
             - --config

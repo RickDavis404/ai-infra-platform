@@ -816,7 +816,7 @@ data:
 
     Version + fail-open guarantee
     -----------------------------
-    Verified against the pinned litellm-database image ``v1.92.0-rc.2`` (see
+    Verified against the pinned litellm-database image ``v1.93.0`` (see
     deployment.yaml): ``add_litellm_data_to_request`` is async, returns ``data``, and
     fills ``proxy_server_request["body"]`` with the shallow snapshot described above.
     A no-op if the symbol is missing (future litellm drift). Any exception — at install
@@ -1022,7 +1022,7 @@ data:
 
     Version + fail-open guarantee
     -----------------------------
-    Verified against the pinned litellm-database image ``v1.92.0-rc.2``: the enum
+    Verified against the pinned litellm-database image ``v1.93.0``: the enum
     members (``OUTPUT_ITEM_DONE`` / ``OUTPUT_TEXT_DONE`` / ``RESPONSE_COMPLETED`` on the
     ``str``-based ``ResponsesAPIStreamEvents``), the recovery-helper signatures, and
     the iterator method names/shapes all match. A no-op if any symbol is missing

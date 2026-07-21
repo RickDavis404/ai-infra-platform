@@ -20,7 +20,7 @@ this platform forbids. Instead:
   forbidden legacy-vendor init image from the source is explicitly replaced.
 
 The container image is pinned (by tag **and** sha256 digest in `deployment.yaml`) to
-`ghcr.io/berriai/litellm-database:v1.92.0-rc.2` (the `-database` variant bakes in
+`ghcr.io/berriai/litellm-database:v1.93.0` (the `-database` variant bakes in
 Prisma/Postgres support for `store_model_in_db`).
 Re-verify the digest at deploy time and pin/verify by digest in CI. The PyPI
 releases `1.82.7` / `1.82.8` were flagged for a supply-chain incident and MUST be
