@@ -26,9 +26,10 @@ resources:
 
 # Demote the chart's spegel-registry Service from NodePort to ClusterIP (lab policy:
 # no NodePort surface — validate:no-nodeport). Peer mirroring uses the registry
-# hostPort (30020) as the primary mirror-target, so removing the NodePort does not
-# break peer-to-peer layer serving. See patches/registry-clusterip.yaml for the full
-# rationale.
+# hostPort (29020 — pinned below Cilium's NodePort range in values.yaml; see that file
+# for why the 30020 chart default is silently dropped by Cilium) as the primary
+# mirror-target, so removing the NodePort does not break peer-to-peer layer serving.
+# See patches/registry-clusterip.yaml for the full rationale.
 patches:
   - path: patches/registry-clusterip.yaml
     target:
