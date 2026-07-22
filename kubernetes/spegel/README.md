@@ -23,7 +23,7 @@ sets (step 2):
 |--------------|-------------------------------------------|
 | Chart        | `spegel`                                  |
 | Repo         | `oci://ghcr.io/spegel-org/helm-charts`    |
-| Version      | **`0.7.2`** (pinned; appVersion `v0.7.2`) |
+| Version      | **`0.7.4`** (pinned; appVersion `v0.7.4`) |
 | Release name | `spegel`                                  |
 | Namespace    | `spegel`                                  |
 | Values       | `values.yaml`                             |

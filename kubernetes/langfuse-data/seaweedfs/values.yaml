@@ -83,6 +83,23 @@ filer:
   enabled: true
   replicas: 2 # S3 endpoint redundancy (metadata HA depends on the metadata backend)
   defaultReplicaPlacement: "001"
+  # Raise the filer's per-entry filename cap above the POSIX-default 255 bytes. The
+  # LiteLLM s3_v2 payload archive (kubernetes/litellm/proxy-config.yaml) builds each
+  # object key's LAST path segment as `time-<HH-MM-SS-ffffff>_<StandardLoggingPayload.id>.json`;
+  # only that final segment is one SeaweedFS entry (the team/key/date prefixes are
+  # separate directory entries and stay well under 255). For codex /v1/responses legs
+  # LiteLLM's id is a base64 of a composite `...;response_id:resp_<hex>` string, so the
+  # filename reaches ~267 bytes and every PUT was rejected 400 ENTRY_NAME_TOO_LONG —
+  # codex traffic was not archived at all (claude/anthropic_messages legs have short
+  # ids and archive fine, which also proves the endpoint/creds/path-style are correct).
+  # LiteLLM exposes no supported knob to shorten/hash that id, so the cap is raised here.
+  # SeaweedFS reads filer.toml's `[filer.options] max_file_name_length` via viper env
+  # override (WEED_ prefix, dot->underscore — same mechanism as the chart's WEED_MYSQL_*);
+  # 1024 is safe because we only use the S3 gateway (no FUSE/POSIX mount whose NAME_MAX
+  # the 255 default guards) and leveldb keys are unbounded. Base value; the lean overlay
+  # inherits it via valuesFile: ../values.yaml.
+  extraEnvironmentVars:
+    WEED_FILER_OPTIONS_MAX_FILE_NAME_LENGTH: "1024"
   data:
     type: persistentVolumeClaim
     storageClass: local-path
@@ -123,6 +140,7 @@ filer:
       - name: loki-chunks
       - name: loki-ruler
       - name: loki-admin
+      - name: litellm-payloads # LiteLLM s3_v2 payload archive (kubernetes/litellm/proxy-config.yaml)
 
 # --- Standalone gateways disabled (embedded filer S3 is used instead) ------------
 s3:

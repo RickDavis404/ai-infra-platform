@@ -13,6 +13,8 @@
 
   "enableAllProjectMcpServers": true,
 
+  "cleanupPeriodDays": 3650,
+
   "disableRemoteControl": false,
   "remoteControlAtStartup": true,
 

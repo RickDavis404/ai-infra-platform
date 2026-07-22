@@ -41,9 +41,9 @@ runs on real multi-host hardware.
 
 ## Image & resources
 
-- Image `clickhouse/clickhouse-server:25.8` (LTS, arm64 multi-arch), `TZ=UTC`.
-  The `:25.8` tag is a **floating minor** pinned only by `@sha256`; patch bumps
-  within the 25.8 LTS line are a manual digest re-pin (edit the `@sha256` in
+- Image `clickhouse/clickhouse-server:26.3.17.56` (26.3 LTS, arm64 multi-arch), `TZ=UTC`.
+  The tag is an **exact 4-part version** pinned by `@sha256`; patch bumps within the
+  26.3 LTS line are a manual tag + digest re-pin (edit the tag and `@sha256` in
   `chi.yaml`/`keeper.yaml`), never automatic.
 - CH pod requests `cpu: 50m, memory: 512Mi`; limit `memory: 8Gi` (a constrained
   lab may lower the limit to `4Gi`). ClickHouse is explicitly subject to the

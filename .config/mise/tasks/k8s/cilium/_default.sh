@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Install/upgrade Cilium 1.20.0-pre.3 (kube-proxy-free), wait ready, then apply LB-IPAM + L2 policy."
+#MISE description="Install/upgrade Cilium (pinned in kubernetes/cilium/kustomization.yaml) (kube-proxy-free), wait ready, then apply LB-IPAM + L2 policy."
 set -euo pipefail
 
-# k8s:cilium — install Cilium 1.20.0-pre.3 in kube-proxy-free mode and wire up the service
+# k8s:cilium — install the pinned Cilium version in kube-proxy-free mode and wire up the service
 # VIP plane, idempotent.
 #
 # Order matters: the CiliumLoadBalancerIPPool + CiliumL2AnnouncementPolicy CRs depend

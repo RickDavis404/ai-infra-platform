@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# .config/bin/codex — committed, TTY-preserving `codex` launcher wrapper.
+#
+# On PATH via conf.d/10-env.toml `_.path = ["{{config_root}}/.config/bin"]`, so a BARE
+# `codex` in a repo shell (mise env active) resolves to THIS wrapper. It injects the full
+# LiteLLM gateway + MCP `-c/--config` provider overrides Codex ignores at the project
+# layer — making bare `codex` ≡ `mise run codex:launch`, while keeping a REAL TTY (`exec`
+# replaces this process in place; `mise run` alone cannot hand a task a TTY).
+#
+# Recursion-safe: the real mise-managed codex is resolved through `mise ... which codex`
+# (the tool registry, NEVER PATH — which this wrapper shadows) and exec'd by its absolute
+# install path. No secret is persisted: the LiteLLM virtual key + MCP creds are sourced
+# from fnox+age at launch and passed only as `-c` args / a transient env var.
+set -euo pipefail
+
+REPO_ROOT="${MISE_PROJECT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && { git rev-parse --show-toplevel 2>/dev/null || pwd -P; })}"
+# shellcheck source=.config/mise/lib/common.sh
+source "${REPO_ROOT}/.config/mise/lib/common.sh"
+
+install_err_trap
+require_cmd mise fnox
+
+# Resolve the REAL mise-managed codex WITHOUT PATH (this wrapper shadows the name).
+# `mise which` queries the tool registry, so it returns the npm install path — never
+# this wrapper — which is why exec'ing it cannot recurse.
+real_codex="$(mise --cd "${REPO_ROOT}" which codex)"
+[[ -n "${real_codex}" && -x "${real_codex}" ]] ||
+  die "could not resolve the mise-managed codex binary (run 'mise install')"
+
+# --- Secrets from fnox+age (captured into locals, never logged) --------------
+[[ -f "${REPO_ROOT}/fnox.local.toml" ]] || die "fnox.local.toml not found at repo root — run 'mise run secrets:keygen' then 'mise run secrets:seal' first."
+# Proxy-hop virtual key for the LiteLLM gateway (default `x-litellm-api-key`).
+CODEX_LITELLM_VIRTUAL_KEY="$(fnox_decrypt CODEX_LITELLM_VIRTUAL_KEY)"
+# MCP server credentials, injected over the non-secret committed env tables.
+GRAFANA_USERNAME="${GRAFANA_USERNAME:-admin}"
+GRAFANA_PASSWORD="$(fnox_decrypt GRAFANA_ADMIN_PASSWORD)"
+LANGFUSE_PUBLIC_KEY="$(fnox_decrypt LANGFUSE_PUBLIC_KEY)"
+LANGFUSE_SECRET_KEY="$(fnox_decrypt LANGFUSE_SECRET_KEY)"
+LANGFUSE_MCP_AUTH_HEADER="Basic $(printf '%s:%s' "${LANGFUSE_PUBLIC_KEY}" "${LANGFUSE_SECRET_KEY}" | base64 | tr -d '\n')"
+export LANGFUSE_MCP_AUTH_HEADER
+
+# Default to Codex's bundled model catalog; CODEX_MODEL overrides for one-off checks.
+model="${CODEX_MODEL:-gpt-5.5}"
+
+info "launching codex (repo wrapper) against the LiteLLM gateway VIP (${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000)"
+
+# `codex -c key=value` parses value as TOML (string values inner-quoted; inline tables
+# use TOML inline syntax). The spend-logs-metadata header is a JSON string whose inner
+# double-quotes are TOML-escaped (\\\" -> \") so LiteLLM tags the spend-log row.
+#
+# grafana MCP: inject the FULL definition (command/args/GRAFANA_URL + creds), not just the
+# secret env. CODEX_HOME is retired, so codex loads the USER config (~/.codex/config.toml),
+# which does NOT carry the grafana command/args — those live only in the committed
+# .codex/config.toml, a project layer codex no longer reads. Injecting env-only would leave
+# a partial `[mcp_servers.grafana]` table with no transport -> codex aborts config load with
+# "invalid transport in mcp_servers.grafana". langfuse_http/litellm_local are already
+# defined in full here for the same reason.
+exec "${real_codex}" \
+  --config model="\"${model}\"" \
+  --config model_provider='"litellm_local"' \
+  --config 'model_providers.litellm_local.name="LiteLLM Local"' \
+  --config "model_providers.litellm_local.base_url=\"http://${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000/v1\"" \
+  --config 'model_providers.litellm_local.requires_openai_auth=true' \
+  --config 'model_providers.litellm_local.wire_api="responses"' \
+  --config 'model_providers.litellm_local.supports_websockets=false' \
+  --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
+  --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
+  --config 'mcp_servers.grafana.command="uvx"' \
+  --config 'mcp_servers.grafana.args=["mcp-grafana", "--disable-write"]' \
+  --config "mcp_servers.grafana.env.GRAFANA_URL=\"http://${AI_INFRA_GRAFANA_VIP:-192.168.105.202}:3000\"" \
+  --config "mcp_servers.grafana.env.GRAFANA_USERNAME=\"${GRAFANA_USERNAME}\"" \
+  --config "mcp_servers.grafana.env.GRAFANA_PASSWORD=\"${GRAFANA_PASSWORD}\"" \
+  --config "mcp_servers.langfuse_http.url=\"http://${AI_INFRA_LANGFUSE_VIP:-192.168.105.201}:3000/api/public/mcp\"" \
+  --config 'mcp_servers.langfuse_http.env_http_headers={ Authorization = "LANGFUSE_MCP_AUTH_HEADER" }' \
+  "$@"

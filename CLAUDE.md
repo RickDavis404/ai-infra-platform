@@ -17,14 +17,19 @@ be discarded** — never cite it as evidence of success or failure.
 To test subscription-model routing **through the LiteLLM gateway**
 (`http://192.168.105.200:4000`), drive the REAL CLI at the VIP:
 
-- **Claude:** run `claude` **directly** from the repo. mise + fnox export `ANTHROPIC_BASE_URL`
-  (the VIP) and `ANTHROPIC_CUSTOM_HEADERS` (`x-litellm-api-key: Bearer <virtual key>`) into the
-  shell on `cd` (`conf.d/10-env.toml` + `secret-env.sh`), so a bare `claude` routes through the
-  gateway with a real TTY. There is **no `claude:launch` task** — `mise run` gives a task a
-  non-TTY stdin, which forces `claude` into `--print`; run it directly instead.
-- **Codex:** `mise run codex:launch` — its `#MISE raw=true` connects the TTY, and it injects the
-  `-c` provider overrides (`base_url` at the gateway, `wire_api = "responses"`) that Codex ignores
-  at the project layer.
+- **Claude:** run `claude` **directly** from the repo, or `mise run claude` (a `raw=true` task that
+  connects a real TTY). mise + fnox export `ANTHROPIC_BASE_URL` (the VIP) and
+  `ANTHROPIC_CUSTOM_HEADERS` (`x-litellm-api-key: Bearer <virtual key>`) into the shell on `cd`
+  (`conf.d/10-env.toml` + `secret-env.sh`), so a bare `claude` routes through the gateway with a
+  real TTY. A plain `mise run <cmd>` hands its child a non-TTY stdin that would force `claude` into
+  `--print`, so the launcher tasks carry `#MISE raw=true`; `claude:no-gateway` additionally unsets
+  the two `ANTHROPIC_*` vars to canary the direct-to-Anthropic path (telemetry still captured).
+- **Codex:** run `codex` **directly** from the repo — a committed `.config/bin/codex` wrapper on
+  `PATH` (via mise `[env]` `_.path`) shadows the mise-managed binary and injects the `-c` provider
+  overrides (`base_url` at the gateway, `wire_api = "responses"`) that Codex ignores at the project
+  layer — or `mise run codex` (`#MISE raw=true` for the TTY; the retained `codex:launch` runs the
+  same wrapper). `codex:no-gateway` drops the overrides to canary the built-in ChatGPT provider with
+  telemetry still flowing.
 
 **Corollary:** if you run `claude` / `codex` from a shell where mise did **not** populate the env
 (outside the repo, or mise not activated), it talks **direct** to the provider, not through
@@ -40,12 +45,15 @@ so a plain `mise install` provides both — do **not** `brew install --cask code
 either (a global npm install entangles the mise-pinned node). The native Claude installer
 (`curl -fsSL https://claude.ai/install.sh | bash` → `~/.local/bin`) stays **optional, for
 out-of-repo use only**. **Log in from OUTSIDE the repo** — mise activation makes `cd` into the
-repo inject the gateway env + `CODEX_HOME`, so never log in via `mise exec` / `mise run`:
+repo inject the gateway env, so never log in via `mise exec` / `mise run`:
 
-- **Codex:** log in from `~` using the mise-managed binary so `CODEX_HOME` stays the real
-  `~/.codex` (not the repo's): `cd ~ && "$(mise --cd <repo-root> which codex)" login` → ChatGPT
-  OAuth → the **file** `~/.codex/auth.json` (works over headless ssh). **THEN** `mise run init` to
-  wire the repo `CODEX_HOME` symlink — must be **after** login or init silently skips it.
+- **Codex:** log in from `~` using the mise-managed binary (the repo no longer repoints
+  `CODEX_HOME`, so `~/.codex` is the only home): `cd ~ && "$(mise --cd <repo-root> which codex)"
+  login` → ChatGPT OAuth → the **file** `~/.codex/auth.json` (works over headless ssh). **THEN**
+  run `mise run codex:global-config` (or accept the prompt during `mise run init`) to merge the
+  repo's `[otel]`/trust/`[analytics]`/inert-provider blocks into `~/.codex/config.toml`
+  (UTC-timestamped backup) so a bare `codex` exports telemetry — run it **after** login; target
+  machines only (never the local machine / CI).
 - **Claude:** log in from `~` using the mise-managed binary **by path** (so the gateway env is not
   injected and the keychain item is created/owned by *that* binary):
   `cd ~ && "$(mise --cd <repo-root> which claude)"` then type `/login` → Anthropic Max/Pro OAuth in
@@ -66,9 +74,10 @@ Full install / auth / verify steps + troubleshooting: [`docs/agent-auth.md`](doc
 
 ## Remote / non-interactive shells — mise env hooks do NOT fire
 
-mise injects the gateway env + `CODEX_HOME` from a **prompt-time hook** (it runs when zsh renders a
-prompt), so `ssh <host> <cmd>`, a non-TTY child, or any scripted invocation **never** gets it — the
-command then talks **direct** to the provider (or misses `CODEX_HOME`). Apply the env **explicitly**:
+mise injects the gateway env — and prepends the `.config/bin/codex` wrapper to `PATH` — from a
+**prompt-time hook** (it runs when zsh renders a prompt), so `ssh <host> <cmd>`, a non-TTY child, or
+any scripted invocation **never** gets it — the command then talks **direct** to the provider (and a
+bare `codex` resolves to the unwrapped binary). Apply the env **explicitly**:
 
 ```sh
 ssh <host> zsh -l -i -c 'cd <repo> && eval "$(mise hook-env -s zsh)" && <command>'

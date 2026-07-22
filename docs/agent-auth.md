@@ -49,34 +49,38 @@ mise --cd <repo-root> which codex
 ## 2. Authenticate (subscription OAuth, from outside the repo)
 
 Log in from a directory **outside the repo** (e.g. `~`). mise activation in
-`~/.zshrc` means a `cd` into the repo injects the gateway passthrough env **and**
-`CODEX_HOME`; you want the login to write your *real* provider session, so **never**
-authenticate via `mise exec` / `mise run` or from inside the repo tree.
+`~/.zshrc` means a `cd` into the repo injects the gateway passthrough env (and, for
+Codex, prepends the `.config/bin/codex` launcher to `PATH`); you want the login to write
+your *real* provider session, so **never** authenticate via `mise exec` / `mise run` or
+from inside the repo tree.
 
 ### Codex (ChatGPT) — file-based, headless-OK
 
-Codex is a mise shim (on PATH only inside the repo), but you must log in from
-**outside** the repo so `CODEX_HOME` stays the real `~/.codex`. Resolve the
-mise-managed binary by path while your cwd is `~`:
+Codex is a mise shim (on PATH only inside the repo). The repo no longer repoints
+`CODEX_HOME`, so `~/.codex` is always the home — but still log in from **outside** the
+repo so the gateway launch env does not interfere. Resolve the mise-managed binary by
+path while your cwd is `~`:
 
 ```sh
-cd ~            # outside the repo, so CODEX_HOME stays ~/.codex
+cd ~                                           # outside the repo (no gateway env injected)
 "$(mise --cd <repo-root> which codex)" login   # ChatGPT subscription OAuth in the browser
 ```
 
 This writes the OAuth session to the **file** `~/.codex/auth.json`, which works
-fine over a headless ssh session. **Then**, and only then, wire the repo's Codex
-config-home symlink so the gateway launch path picks up your session:
+fine over a headless ssh session. **Then**, and only then, merge the repo's Codex
+telemetry / trust config into your real `~/.codex/config.toml` so a bare `codex` exports
+to the local collector (metrics otherwise default to OpenAI statsig):
 
 ```sh
 cd <repo-root>
-mise run init   # wires .config/codex/auth.json -> ~/.codex/auth.json
-# equivalently: ln -s ~/.codex/auth.json <repo-root>/.config/codex/auth.json
+mise run codex:global-config   # UTC-timestamped backup, then an idempotent merge of the
+                               # [otel]/trust/[analytics]/inert-provider blocks into ~/.codex/config.toml
+# `mise run init` also offers to run this step.
 ```
 
-**Ordering matters:** run this **after** `codex login`. If the symlink step runs
-before `~/.codex/auth.json` exists, it silently skips and the repo's `CODEX_HOME`
-ends up with no session.
+**Ordering matters:** run this **after** `codex login`. The merge is idempotent and never
+touches unrelated keys; it is for attended / target machines only — skip it on the local
+machine and on CI / publication runs.
 
 ### Claude Code (Anthropic) — login keychain, attended GUI only
 
@@ -157,7 +161,7 @@ provider path):
 - (Interactive spot-check) `claude`'s `/status` shows base URL
   `192.168.105.200:4000`.
 
-For the fuller interactive routing test (`mise run codex:launch`, and running
+For the fuller interactive routing test (`mise run codex` or a bare `codex`, and running
 `claude` directly with a real TTY), see [`developer-workflows.md`](developer-workflows.md)
 §6 and the [`CLAUDE.md`](../CLAUDE.md) "testing subscription models" rule.
 
@@ -169,7 +173,7 @@ For the fuller interactive routing test (`mise run codex:launch`, and running
 | `command not found: claude` / `codex` | Both are mise shims, on PATH only inside the repo | Run from the repo, or resolve by path with `mise --cd <repo-root> which claude` / `… which codex`. (Only if you used the optional native Claude installer: ensure `~/.local/bin` is on PATH in `~/.zshrc`.) |
 | `claude`: *"native binary not installed"* | The npm wrapper's postinstall (which downloads the native binary) was skipped by mise's default `--ignore-scripts` | The pin sets `npm_args = "--ignore-scripts=false"`; force a clean reinstall — `mise uninstall npm:@anthropic-ai/claude-code@<ver> && mise install` |
 | `claude`: `Not logged in` right after a **version bump** (attended GUI) | Keychain ACLs are per-binary; the new mise install path is a *new* binary needing fresh approval | Click **Always Allow** once on the "claude wants to use confidential information" prompt on that machine; or adopt `claude setup-token` + `CLAUDE_CODE_OAUTH_TOKEN` |
-| Codex works, but the repo's `CODEX_HOME` has no session | The symlink step ran **before** `codex login` and silently skipped | Re-run `mise run init` (or `ln -s ~/.codex/auth.json <repo-root>/.config/codex/auth.json`) **after** `~/.codex/auth.json` exists |
+| Codex works, but a bare `codex` ships metrics to OpenAI statsig instead of the local collector | `codex:global-config` was never run (or ran **before** `codex login`), so `~/.codex/config.toml` has no `[otel]` block | Run `mise run codex:global-config` **after** `~/.codex/auth.json` exists (target machines only) |
 | "It works" but you can't tell it used the gateway | Ran the CLI from outside the repo / mise env not populated → it talks **direct** to the provider | Run from the repo root; confirm via a Langfuse trace or `/status` base URL `192.168.105.200:4000` |
 | Tempted to `curl` the gateway to "test" a model | curl cannot reproduce the CLI OAuth session — the result is meaningless | Test with the real `claude` / `codex` CLI only (see [`CLAUDE.md`](../CLAUDE.md)) |
 

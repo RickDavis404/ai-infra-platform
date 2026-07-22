@@ -28,6 +28,10 @@ namespace: langfuse-data
 resources:
   - ../keeper.yaml
   - ../chi.yaml
+  # Profile-invariant: the events-schema migration Job runs the same ON CLUSTER
+  # 'default' DDL against the single lean replica as against the HA pair, so it is
+  # re-listed verbatim with no lean patch. Keep in lock-step with ../kustomization.yaml.
+  - ../events-schema-job.yaml
 
 patches:
   - target:

@@ -84,7 +84,7 @@ run_live_gpt55_smoke() {
       --config 'model_providers.litellm_local.wire_api="responses"' \
       --config 'model_providers.litellm_local.supports_websockets=false' \
       --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
-      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${codex_key}\" }" \
+      --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${codex_key}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex-smoke\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
       "${prompt}"
   ) >"${stdout_file}" 2>"${stderr_file}"
   rc=$?
@@ -141,7 +141,8 @@ grep -q 'mcp_servers.langfuse' "${cfg}" || fail "FAIL: langfuse MCP def missing"
 
 # 3. IGNORED keys MUST be absent (Codex warns on these at the project layer).
 for k in openai_base_url chatgpt_base_url apps_mcp_product_sku model_provider \
-  model_providers notify profile profiles experimental_realtime_ws_base_url otel; do
+  model_providers notify profile profiles experimental_realtime_ws_base_url \
+  experimental_realtime_webrtc_call_base_url otel; do
   if grep -Eq "^${k}([.[:space:]=]|s?[[:space:]]*[=.[])" "${cfg}"; then
     fail "FAIL: ignored key '${k}' present in project config"
   fi

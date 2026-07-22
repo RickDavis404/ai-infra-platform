@@ -14,14 +14,14 @@ kind: Kustomization
 # down.sh). The bucket-hook namespace-backfill patch is re-listed from the base
 # kustomization (a re-declared helmChart does not inherit the base's patches).
 #
-# Chart pin MUST equal the base (seaweedfs 4.37); a Renovate bump to
+# Chart pin MUST equal the base (seaweedfs 4.40.0); a Renovate bump to
 # ../kustomization.yaml will NOT touch this copy — keep them in lock-step.
 namespace: langfuse-data
 
 helmCharts:
 - name: seaweedfs
   repo: https://seaweedfs.github.io/seaweedfs/helm
-  version: "4.37"
+  version: "4.40.0"
   releaseName: langfuse-seaweedfs
   namespace: langfuse-data
   valuesFile: ../values.yaml

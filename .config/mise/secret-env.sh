@@ -18,6 +18,14 @@
 
 _repo="${MISE_PROJECT_ROOT:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 
+# Claude Code raw-body capture target: OTEL_LOG_RAW_API_BODIES (conf.d/10-env.toml)
+# points at this dir but `claude` does NOT create it. This file is sourced on every cd
+# into the repo, so ensure the dir pre-exists here too — otherwise an in-place branch
+# pull (no `mise run init` / `host:up` / claude launch task re-run) would leave the
+# env var pointing at a missing dir and raw-body capture would silently drop.
+# Idempotent; 2>/dev/null keeps a failure from ever breaking the interactive shell.
+mkdir -p "$_repo/.local/logs/claude/otel-raw-bodies" 2>/dev/null || true
+
 # fnox is mise-managed (mise.toml [tools]) and is NOT on PATH yet when mise evaluates
 # this file via [env]._.source — mise prepends its tool-shim dir to PATH only AFTER
 # running the _.source hook (confirmed: `command -v fnox` fails here even in an
@@ -50,13 +58,15 @@ _exp() {
 
 # Claude Code proxy-hop header: compose only when the virtual key resolves.
 _vk=$(_fx CLAUDE_CODE_LITELLM_VIRTUAL_KEY)
-_exp ANTHROPIC_CUSTOM_HEADERS "${_vk:+x-litellm-api-key: Bearer $_vk}"
+_exp ANTHROPIC_CUSTOM_HEADERS "${_vk:+x-litellm-api-key: Bearer $_vk
+x-litellm-spend-logs-metadata: {\"source\":\"claude-code\",\"host\":\"$(hostname -s)\"}}"
 
 # Codex proxy-hop virtual key: export the raw key (still passed straight through)
-# AND a composed `Bearer <key>` header value. The repo-local $CODEX_HOME user-layer
-# config (.config/codex/config.toml) references CODEX_LITELLM_AUTH_HEADER via
-# env_http_headers, so a bare `codex` routes through the gateway with no secret
-# committed to the file (mirrors LANGFUSE_MCP_AUTH_HEADER below).
+# AND a composed `Bearer <key>` header value. The committed `.config/bin/codex`
+# wrapper (on PATH via 10-env.toml `_.path`) injects `-c` provider overrides that
+# consume CODEX_LITELLM_VIRTUAL_KEY / CODEX_LITELLM_AUTH_HEADER, so a bare `codex`
+# routes through the gateway with no secret written to any file; `~/.codex` is the
+# only Codex home now (the repo no longer overrides CODEX_HOME).
 _codex_vk=$(_fx CODEX_LITELLM_VIRTUAL_KEY)
 _exp CODEX_LITELLM_VIRTUAL_KEY "$_codex_vk"
 _exp CODEX_LITELLM_AUTH_HEADER "${_codex_vk:+Bearer $_codex_vk}"

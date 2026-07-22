@@ -51,19 +51,19 @@ if [[ -z "${choice}" ]]; then
       ans="$(printf '%s' "${ans}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
       [[ -z "${ans}" ]] && ans="${PF_RECOMMENDED}"
       case "${ans}" in
-        lean | l)
-          choice="lean"
-          break
-          ;;
-        ha | h)
-          choice="ha"
-          break
-          ;;
-        abort | a | q | quit | n)
-          info "up — aborted by operator; nothing was brought up."
-          exit 0
-          ;;
-        *) warn "unrecognized choice '${ans}' — enter lean, ha, or abort." ;;
+      lean | l)
+        choice="lean"
+        break
+        ;;
+      ha | h)
+        choice="ha"
+        break
+        ;;
+      abort | a | q | quit | n)
+        info "up — aborted by operator; nothing was brought up."
+        exit 0
+        ;;
+      *) warn "unrecognized choice '${ans}' — enter lean, ha, or abort." ;;
       esac
     done
   else

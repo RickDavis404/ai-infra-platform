@@ -68,7 +68,6 @@ kubernetes/**/charts/
 **/.claude/settings.local*
 **/.claude/settings.*.json
 !**/.claude/settings.local.json.example
-.claude/otel-raw-bodies/
 .claude/state/
 !.claude/state/.gitignore
 # saved dynamic-workflow scripts embed the machine-absolute repo path (host-specific,
@@ -76,13 +75,11 @@ kubernetes/**/charts/
 .claude/workflows/
 **/.codex/auth.json
 **/.codex/*.local.*
-# Repo-local Codex home ($CODEX_HOME): commit only the provider config + pinned catalog;
-# ignore all runtime state codex writes here (auth.json OAuth token, history, sessions, logs).
-# NB: the `**/.codex/*` patterns above do NOT match `.config/codex/` (dir segment is
-# `codex`, not `.codex`), so this explicit block is required.
-/.config/codex/*
-!/.config/codex/config.toml
-!/.config/codex/model-catalog-codex-defaults-*.json
+# Retired repo-local Codex home (CODEX_HOME now resolves to ~/.codex). The repo
+# tracks nothing here; ignore the whole dir so leftover runtime state (auth.json,
+# sqlite DBs, plugin caches) is never staged and never walked by the tree scanners.
+# Operators may `rm -rf .config/codex` after upgrading.
+/.config/codex/
 
 # --- Lima host mounts (writable virtiofs mount tree per VM; D005) ---
 # ./.local/lima/<vm>/{storage,config,...} — host-visible PVC + service config data

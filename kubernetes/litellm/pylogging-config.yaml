@@ -7,7 +7,7 @@ metadata:
     app.kubernetes.io/name: litellm
 data:
   # Mounted at /etc/litellm-pylogging and loaded via PYTHONPATH so Python imports it
-  # automatically at interpreter startup (the `sitecustomize` hook). It has TWO
+  # automatically at interpreter startup (the `sitecustomize` hook). It has FOUR
   # responsibilities, in order:
   #   §8a — rewrite uvicorn.access records into structured JSON before LiteLLM's
   #         JsonFormatter handlers run (provider-neutral; installed first).
@@ -18,7 +18,23 @@ data:
   #         CHATGPT_PASSTHROUGH_PATCH=0; default-on. Pinned to the litellm-database
   #         image tag in deployment.yaml (version-coupled internals) and wholly
   #         best-effort — every import/override is guarded so a future image upgrade
-  #         can never block or crash proxy startup.
+  #         can never block or crash proxy startup. §8b-b6 additionally carries a
+  #         classic-langfuse output backfill for codex /responses (co-located with
+  #         the trace-naming hook; pairs with §8d).
+  #   §8c — spend-log credential scrub (defence-in-depth): masks forwarded
+  #         subscription-credential VALUES in the proxy_server_request.body snapshot
+  #         that LiteLLM persists into every LiteLLM_SpendLogs row under the
+  #         max-capture posture, WITHOUT touching the live request the upstream call
+  #         forwards. Version-coupled and fully guarded like §8b; never mutates live
+  #         passthrough state, and any failure leaves traffic unchanged.
+  #   §8d — Responses-API streaming output recovery (LOG/CAPTURE): reconstructs the
+  #         codex /responses assistant output that ChatGPT streams via
+  #         output_item.done / output_text.done SSE events but omits from its empty
+  #         terminal response.completed event, backfilling it into the assembled
+  #         response BEFORE the logging snapshot so spend-logs, s3_v2 and langfuse all
+  #         capture it. Reuses litellm's own sse_output_recovery helpers; version-
+  #         coupled and fully guarded like §8b/§8c; only ever touches the logging
+  #         object, never live passthrough state.
   sitecustomize.py: |
     """Structured uvicorn access logging for LiteLLM (§8a).
 
@@ -653,9 +669,16 @@ data:
         except Exception as exc:  # noqa: BLE001
             _log.warning("ChatGPT passthrough: pre-call header patch failed (%s).", exc)
 
-        # --- Best-effort Langfuse trace naming for Codex turns ---------------------
+        # --- Best-effort Langfuse trace naming + codex output backfill for Codex ---
         try:
             from litellm.integrations.langfuse.langfuse import LangFuseLogger
+
+            try:
+                from litellm.types.llms.openai import (
+                    ResponsesAPIResponse as _ResponsesAPIResponse,
+                )
+            except Exception:  # noqa: BLE001
+                _ResponsesAPIResponse = None
 
             _orig_log_event = LangFuseLogger.log_event_on_langfuse
 
@@ -676,6 +699,48 @@ data:
                         metadata.setdefault(
                             "generation_name", f"codex-{model}-responses"
                         )
+
+                        # §8d-classic output backfill (co-located with §8b-b6).
+                        # §8d already repairs standard_logging_object["response"].output
+                        # at the streaming-iterator layer, and for streaming /responses
+                        # the object handed here is normally that assembled
+                        # ResponsesAPIResponse (complete_streaming_response) — so the
+                        # stock isinstance(ResponsesAPIResponse) extractor already yields
+                        # the recovered output. This is belt-and-suspenders for any path
+                        # where stock extraction would still yield EMPTY output: unwrap a
+                        # ResponseCompletedEvent to its inner ResponsesAPIResponse so the
+                        # extractor branch fires, and if that output is STILL empty,
+                        # backfill it from the standard_logging_object snapshot (which
+                        # §8d populates). Only ever touches the logging object; never
+                        # mutates live passthrough state, and only fires when output is
+                        # empty (well-behaved responses are left untouched).
+                        if _ResponsesAPIResponse is not None:
+                            target = None
+                            if isinstance(response_obj, _ResponsesAPIResponse):
+                                target = response_obj
+                            else:
+                                inner = getattr(response_obj, "response", None)
+                                if isinstance(inner, _ResponsesAPIResponse):
+                                    target = inner
+                                    response_obj = inner
+                            if target is not None and not getattr(
+                                target, "output", None
+                            ):
+                                slo = (kwargs or {}).get(
+                                    "standard_logging_object"
+                                ) or {}
+                                slo_resp = (
+                                    slo.get("response")
+                                    if isinstance(slo, dict)
+                                    else None
+                                )
+                                slo_out = (
+                                    slo_resp.get("output")
+                                    if isinstance(slo_resp, dict)
+                                    else None
+                                )
+                                if slo_out:
+                                    target.output = slo_out
                 except Exception:  # noqa: BLE001
                     pass
                 return _orig_log_event(self, kwargs, response_obj, *args, **lf_kwargs)
@@ -694,4 +759,385 @@ data:
         _patch_chatgpt_passthrough_auth()
     except Exception:  # noqa: BLE001
         # The passthrough patch is best-effort; it must NEVER break interpreter startup.
+        pass
+
+    # ====================================================================
+    # §8c — Spend-log credential scrub (defence-in-depth). Installed AFTER
+    # §8b; like §8a/§8b it lives at module level inside the sitecustomize
+    # literal, is fully guarded, and never raises.
+    # ====================================================================
+    """§8c spend-log credential scrub (version-coupled, fail-open).
+
+    What it patches
+    ---------------
+    Wraps ``litellm.proxy.litellm_pre_call_utils.add_litellm_data_to_request`` (an
+    async function). That function builds ``data["proxy_server_request"]`` — the
+    verbatim request snapshot LiteLLM persists into the ``LiteLLM_SpendLogs`` row when
+    ``store_prompts_in_spend_logs`` is on (this platform's max-capture posture). We
+    post-process the RETURNED ``data`` so the snapshot under
+    ``proxy_server_request["body"]`` has credential VALUES masked, WITHOUT altering the
+    live request objects the upstream call forwards.
+
+    Why it exists
+    -------------
+    The stock snapshot copies the forwarded subscription credentials verbatim into
+    EVERY passthrough spend-log row: the Codex path stores the ChatGPT OAuth Bearer JWT
+    + ``chatgpt-account-id`` under ``body.extra_headers`` (with a duplicate under
+    ``body.provider_specific_header``); the Claude path stores the Claude Max OAuth
+    token under ``body.litellm_metadata.headers.authorization``. No upstream knob strips
+    ONLY these auth headers while keeping message/response capture:
+    ``redact_user_api_key_info`` drops only ``user_api_key*`` keys, and
+    ``turn_off_message_logging`` destroys the very capture this platform wants. This
+    branch also removed the 90-day spend-log purge, turning a bounded exposure into a
+    permanent one, so masking the snapshot is mandatory here.
+
+    Correctness — replace-with-copy discipline
+    -------------------------------------------
+    In the pinned image ``body`` is a SHALLOW comprehension over ``data``
+    (``{k: v for k, v in data.items() ...}``): a distinct dict, but its sub-values
+    (``extra_headers``, ``metadata``, ``litellm_metadata``, ``provider_specific_header``)
+    are the SAME objects the live request holds and that §8b's codex path
+    (``secret_fields.raw_headers`` / ``data["extra_headers"]`` /
+    ``provider_specific_header``) and anthropic forwarding read downstream. So we NEVER
+    mutate those sub-dicts in place: we build freshly masked copies and substitute them
+    into a shallow copy of ``body``, then reassign only
+    ``proxy_server_request["body"]``. ``provider_specific_header`` is dropped from that
+    body copy — never popped from the live ``data`` (the shallow ``dict(body)`` copy
+    keeps that safe even in a hypothetical future image where ``body is data``). Message
+    I/O, tags, user-agent and ``x-litellm-spend-logs-metadata`` all survive untouched.
+
+    Import ordering
+    ---------------
+    Rebinds the MODULE attribute ``litellm_pre_call_utils.add_litellm_data_to_request``.
+    sitecustomize is preloaded via PYTHONPATH and runs before ``proxy_server.py`` does
+    its ``from ... import add_litellm_data_to_request``, so that from-import binds THIS
+    wrapper — mirroring §8b, which likewise patches only the module attribute and relies
+    on the same preload ordering.
+
+    Version + fail-open guarantee
+    -----------------------------
+    Verified against the pinned litellm-database image ``v1.93.0`` (see
+    deployment.yaml): ``add_litellm_data_to_request`` is async, returns ``data``, and
+    fills ``proxy_server_request["body"]`` with the shallow snapshot described above.
+    A no-op if the symbol is missing (future litellm drift). Any exception — at install
+    OR per-request — logs a warning and leaves traffic completely unchanged; this code
+    can neither block nor crash the proxy.
+    """
+
+    _scrub_log = logging.getLogger("litellm.spend_log_scrub")
+
+    # Header names whose VALUES are credentials; masked case-insensitively wherever
+    # they appear inside the spend-log body snapshot.
+    _SPEND_LOG_SECRET_HEADERS = frozenset(
+        {
+            "authorization",
+            "proxy-authorization",
+            "x-api-key",
+            "x-litellm-api-key",
+            "api-key",
+            "x-goog-api-key",
+            "chatgpt-account-id",
+            "openai-organization",
+            "cookie",
+        }
+    )
+    _SPEND_LOG_MASK = "***REDACTED***"
+
+
+    def _mask_secret_headers(headers):
+        """Return a NEW dict with secret-header VALUES masked (case-insensitive).
+
+        Non-dict input is returned unchanged. The original mapping is never mutated, so
+        the caller can substitute the result into the snapshot while the live request
+        keeps the real credential.
+        """
+        if not isinstance(headers, dict):
+            return headers
+        masked = {}
+        for key, value in headers.items():
+            if str(key).lower() in _SPEND_LOG_SECRET_HEADERS and value:
+                masked[key] = _SPEND_LOG_MASK
+            else:
+                masked[key] = value
+        return masked
+
+
+    def _scrub_spend_log_credentials(data) -> None:
+        """Mask credential VALUES in ``data["proxy_server_request"]["body"]``.
+
+        Only the snapshot is altered, and only by substituting NEW dicts — the live
+        request sub-dicts (shared by reference) are never mutated.
+        """
+        if not isinstance(data, dict):
+            return
+        psr = data.get("proxy_server_request")
+        if not isinstance(psr, dict):
+            return
+        body = psr.get("body")
+        if not isinstance(body, dict):
+            return
+
+        # Work on a shallow copy of the body so that, even in a hypothetical future
+        # image where ``body is data``, we never pop from or mutate the live dict.
+        new_body = dict(body)
+
+        # (1) extra_headers — the Responses/codex passthrough credential carrier.
+        extra = new_body.get("extra_headers")
+        if isinstance(extra, dict):
+            new_body["extra_headers"] = _mask_secret_headers(extra)
+
+        # (2) metadata.headers / litellm_metadata.headers — the claude carrier. Rebuild
+        # the metadata dict (new object) so every OTHER metadata field is preserved.
+        for meta_key in ("metadata", "litellm_metadata"):
+            meta = new_body.get(meta_key)
+            if isinstance(meta, dict) and isinstance(meta.get("headers"), dict):
+                new_meta = dict(meta)
+                new_meta["headers"] = _mask_secret_headers(meta["headers"])
+                new_body[meta_key] = new_meta
+
+        # (3) Drop the duplicate credential carrier entirely from the snapshot. This
+        # removes the key from new_body ONLY (never from the live ``data``).
+        new_body.pop("provider_specific_header", None)
+
+        psr["body"] = new_body
+
+
+    def _patch_spend_log_credential_scrub() -> None:
+        try:
+            from litellm.proxy import litellm_pre_call_utils as _pcu
+        except Exception as exc:  # noqa: BLE001
+            _scrub_log.warning(
+                "Spend-log scrub patch: litellm_pre_call_utils not importable (%s); "
+                "skipping (startup unaffected).",
+                exc,
+            )
+            return
+
+        _orig_add_litellm_data = getattr(_pcu, "add_litellm_data_to_request", None)
+        if _orig_add_litellm_data is None:
+            _scrub_log.warning(
+                "Spend-log scrub patch: add_litellm_data_to_request missing; skipping "
+                "(startup unaffected)."
+            )
+            return
+
+        async def _add_litellm_data_to_request(*args, **kwargs):
+            data = await _orig_add_litellm_data(*args, **kwargs)
+            try:
+                _scrub_spend_log_credentials(data)
+            except Exception as exc:  # noqa: BLE001
+                _scrub_log.warning(
+                    "Spend-log scrub: masking failed (%s); leaving the snapshot "
+                    "unchanged.",
+                    exc,
+                )
+            return data
+
+        # Rebind the MODULE attribute (see the "Import ordering" note above): the
+        # preloaded sitecustomize runs before proxy_server.py's from-import, so the
+        # from-import binds this wrapper. Mirrors §8b's module-attribute patch style.
+        _pcu.add_litellm_data_to_request = _add_litellm_data_to_request
+        _scrub_log.info(
+            "Spend-log credential scrub patch (§8c) installed; pinned to the "
+            "litellm-database image tag in deployment.yaml."
+        )
+
+
+    try:
+        _patch_spend_log_credential_scrub()
+    except Exception:  # noqa: BLE001
+        # The spend-log scrub patch is best-effort; it must NEVER break startup.
+        pass
+
+    # ====================================================================
+    # §8d — Responses-API streaming output recovery (LOG/CAPTURE).
+    # Installed AFTER §8c; like §8a/§8b/§8c it lives at module level inside
+    # the sitecustomize literal, is fully guarded, and never raises.
+    # ====================================================================
+    """§8d Responses-API streaming output recovery (version-coupled, fail-open).
+
+    What it patches
+    ---------------
+    Wraps TWO methods on
+    ``litellm.responses.streaming_iterator.BaseResponsesAPIStreamingIterator``:
+    ``_process_chunk`` (to ACCUMULATE streamed output items as the SSE events flow
+    through) and ``_log_completed_response`` (to BACKFILL an empty terminal
+    ``response.output`` from those accumulated items, immediately before the logging
+    snapshot is taken). ``_log_completed_response`` is defined once on the base class
+    and inherited by every concrete iterator, so a single wrap covers the sync, async
+    and mock/cached paths.
+
+    Symptom
+    -------
+    codex ``/v1/responses`` streaming assistant text is captured in NO sink — the
+    Postgres ``LiteLLM_SpendLogs`` ``response->'output'`` is an empty array, the
+    s3_v2 payload stores an empty response, and the Langfuse generation output is
+    empty — despite real ``completion_tokens`` and the client visibly receiving the
+    text (e.g. "pong").
+
+    Root cause
+    ----------
+    ChatGPT's ``backend-api/codex`` streams the assistant text via
+    ``response.output_item.done`` / ``response.output_text.done`` SSE events but ships
+    an EMPTY ``output`` array in its terminal ``response.completed`` event. LiteLLM's
+    real-streaming iterator stores that terminal event verbatim
+    (``self.completed_response = <ResponseCompletedEvent with .response.output == []>``)
+    and NEVER runs the SSE output-recovery that its own BUFFERED path
+    (``ChatGPTResponsesAPIConfig._extract_completed_response_from_sse`` ->
+    ``_build_completed_response_from_chunk``) uses. Because ChatGPT 400s on any
+    non-streaming Responses request (``{"detail":"Stream must be set to true"}``), the
+    buffered-recovery path is unreachable and ``should_fake_stream=False`` (§8b-b2) is
+    mandatory — it is NOT the fixable cause. Every logging sink reads the same empty
+    ``standard_logging_object["response"]``, so a callback change is structurally
+    incapable of fixing it; the reconstruction MUST happen at the streaming-iterator
+    layer, which then repairs every sink at once.
+
+    Mechanism (mirrors the buffered recovery exactly)
+    -------------------------------------------------
+    The ``_process_chunk`` wrap reuses LiteLLM's OWN
+    ``litellm.responses.sse_output_recovery`` helpers (``record_output_item_chunk`` /
+    ``record_output_text_chunk``) to record OUTPUT_ITEM_DONE / OUTPUT_TEXT_DONE events
+    into per-iterator dicts keyed by ``output_index``. On the terminal event the
+    backfill merges them with real OUTPUT_ITEM_DONE items taking precedence over
+    text-only items at the same index (``merged = {**text_only}; merged.update(real)``)
+    and — ONLY when the terminal ``response.output`` is empty — assigns the sorted
+    list, exactly the guard + precedence of ``_build_completed_response_from_chunk``
+    (``response_payload["output"] = [item for _, item in sorted(...)]`` iff
+    ``not response_payload.get("output") and streamed_output_items``). The ``output``
+    field on ``ResponsesAPIResponse`` is typed ``List[Union[ResponseOutputItem, Dict]]``,
+    so assigning the recovered raw dicts in place is type-valid and serialises cleanly.
+
+    Timing (why the backfill lives in ``_log_completed_response``)
+    -------------------------------------------------------------
+    ``_process_chunk`` sets ``self.completed_response`` AND, in the SAME call,
+    dispatches the success handlers via ``_handle_logging_completed_response`` ->
+    ``_log_completed_response`` — which snapshots the response with
+    ``type(...).model_validate(...model_dump())`` and hands that COPY to every sink.
+    A backfill performed after ``_process_chunk`` returns would be too late: the
+    snapshot has already frozen the empty output. Wrapping ``_log_completed_response``
+    backfills ``self.completed_response.response.output`` immediately BEFORE that
+    snapshot, so spend-logs, s3_v2 and the classic/otel langfuse callbacks all observe
+    the repaired output. (The classic langfuse callback additionally receives the
+    already-repaired assembled response; the §8b-b6 backfill is belt-and-suspenders.)
+
+    Version + fail-open guarantee
+    -----------------------------
+    Verified against the pinned litellm-database image ``v1.93.0``: the enum
+    members (``OUTPUT_ITEM_DONE`` / ``OUTPUT_TEXT_DONE`` / ``RESPONSE_COMPLETED`` on the
+    ``str``-based ``ResponsesAPIStreamEvents``), the recovery-helper signatures, and
+    the iterator method names/shapes all match. A no-op if any symbol is missing
+    (future litellm drift) and idempotent (a sentinel prevents double-wrapping). Every
+    accumulation and backfill is wrapped so it can neither block nor crash the proxy,
+    and it only ever touches the logging object — never live passthrough state.
+    Upstreamable: the streaming iterator SHOULD call the ``sse_output_recovery``
+    helpers the buffered path already uses (to be filed against BerriAI/litellm).
+    """
+
+    _recovery_log = logging.getLogger("litellm.responses_output_recovery")
+
+
+    def _patch_responses_streaming_output_recovery() -> None:
+        try:
+            from litellm.responses.streaming_iterator import (
+                BaseResponsesAPIStreamingIterator,
+            )
+            from litellm.responses.sse_output_recovery import (
+                record_output_item_chunk,
+                record_output_text_chunk,
+            )
+            from litellm.types.llms.openai import ResponsesAPIStreamEvents
+        except Exception as exc:  # noqa: BLE001
+            _recovery_log.warning(
+                "Responses output-recovery patch: internals not importable (%s); "
+                "skipping (startup unaffected).",
+                exc,
+            )
+            return
+
+        # Idempotent: never wrap twice (mirrors §8b/§8c sentinel discipline).
+        if getattr(
+            BaseResponsesAPIStreamingIterator,
+            "_responses_output_recovery_patch",
+            False,
+        ):
+            return
+
+        _orig_process_chunk = BaseResponsesAPIStreamingIterator._process_chunk
+        _orig_log_completed = BaseResponsesAPIStreamingIterator._log_completed_response
+
+        def _process_chunk_with_output_recovery(self, chunk):
+            # Accumulate the streamed output items BEFORE delegating to the original
+            # per-chunk handler. The `chunk` here is the SSE `data:`-stripped field
+            # content (SSEDecoder output), i.e. the same string the original
+            # `_process_chunk` will `json.loads` — so we parse it directly (do NOT
+            # re-strip `data:`). A cheap substring gate avoids re-parsing the (often
+            # large) delta stream twice; the exact enum comparison below is the real
+            # filter, so a false-positive substring is harmless.
+            try:
+                if isinstance(chunk, str) and (
+                    "output_item.done" in chunk or "output_text.done" in chunk
+                ):
+                    parsed = json.loads(chunk)
+                    if isinstance(parsed, dict):
+                        event_type = parsed.get("type")
+                        if event_type == ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE:
+                            if not hasattr(self, "_rec_output_items"):
+                                self._rec_output_items = {}
+                            record_output_item_chunk(parsed, self._rec_output_items)
+                        elif event_type == ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE:
+                            if not hasattr(self, "_rec_output_items"):
+                                self._rec_output_items = {}
+                            if not hasattr(self, "_rec_text_items"):
+                                self._rec_text_items = {}
+                            record_output_text_chunk(
+                                parsed,
+                                self._rec_output_items,
+                                self._rec_text_items,
+                            )
+            except Exception:  # noqa: BLE001
+                # Accumulation is best-effort; never disturb stream processing.
+                pass
+            return _orig_process_chunk(self, chunk)
+
+        def _log_completed_response_with_output_recovery(self, *args, **kwargs):
+            # Backfill an empty terminal `response.output` from the accumulated items
+            # BEFORE the original snapshots the response for logging. Mirrors
+            # `_build_completed_response_from_chunk`: real OUTPUT_ITEM_DONE items take
+            # precedence over text-only items at the same output_index, and the
+            # backfill fires ONLY when the terminal output is empty.
+            try:
+                completed = getattr(self, "completed_response", None)
+                resp = getattr(completed, "response", None)
+                if resp is not None and not getattr(resp, "output", None):
+                    merged = {**getattr(self, "_rec_text_items", {})}
+                    merged.update(getattr(self, "_rec_output_items", {}))
+                    if merged:
+                        resp.output = [item for _, item in sorted(merged.items())]
+                        _recovery_log.info(
+                            "§8d: reconstructed %d Responses-API output item(s) from "
+                            "streamed SSE events (terminal response.output was empty).",
+                            len(merged),
+                        )
+            except Exception:  # noqa: BLE001
+                # Backfill is best-effort; never break the logging path.
+                pass
+            return _orig_log_completed(self, *args, **kwargs)
+
+        BaseResponsesAPIStreamingIterator._process_chunk = (
+            _process_chunk_with_output_recovery
+        )
+        BaseResponsesAPIStreamingIterator._log_completed_response = (
+            _log_completed_response_with_output_recovery
+        )
+        BaseResponsesAPIStreamingIterator._responses_output_recovery_patch = True
+        _recovery_log.info(
+            "Responses-API streaming output recovery patch (§8d) installed; pinned to "
+            "the litellm-database image tag in deployment.yaml."
+        )
+
+
+    try:
+        _patch_responses_streaming_output_recovery()
+    except Exception:  # noqa: BLE001
+        # The output-recovery patch is best-effort; it must NEVER break startup.
         pass

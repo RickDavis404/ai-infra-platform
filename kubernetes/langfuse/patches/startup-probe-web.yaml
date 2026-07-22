@@ -10,7 +10,7 @@
 # first-boot budget below is sized to cover this in a SINGLE startup window (a smaller
 # budget SIGTERMs mid-migration each cycle; the pod only converges after several
 # lucky restarts, and `mise run up`'s rollout wait times out first).
-# The pinned chart (1.5.37) templates only livenessProbe
+# The pinned chart (1.5.40) templates only livenessProbe
 # + readinessProbe and has NO startupProbe (verified in
 # charts/.../templates/web/deployment.yaml). With no startupProbe the livenessProbe
 # starts probing during that window and SIGTERMs the pod mid-migration, so

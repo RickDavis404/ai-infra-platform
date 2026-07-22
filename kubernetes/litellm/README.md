@@ -20,7 +20,7 @@ this platform forbids. Instead:
   forbidden legacy-vendor init image from the source is explicitly replaced.
 
 The container image is pinned (by tag **and** sha256 digest in `deployment.yaml`) to
-`ghcr.io/berriai/litellm-database:v1.92.0-rc.2` (the `-database` variant bakes in
+`ghcr.io/berriai/litellm-database:v1.93.0` (the `-database` variant bakes in
 Prisma/Postgres support for `store_model_in_db`).
 Re-verify the digest at deploy time and pin/verify by digest in CI. The PyPI
 releases `1.82.7` / `1.82.8` were flagged for a supply-chain incident and MUST be
@@ -35,7 +35,7 @@ never `pip install`s it at runtime.
 | `deployment.yaml`       | 2 replicas, RollingUpdate `maxUnavailable:0`, anti-affinity, probes, init wait-for-postgres. |
 | `service.yaml`          | LoadBalancer VIP `192.168.105.200:4000` (Cilium L2, port `http`) + Prometheus scrape annotations. |
 | `proxy-config.yaml`     | ConfigMap `litellm-config` → `proxy_config.yaml` (general/litellm settings + model_list). |
-| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (§8a structured uvicorn access logs + §8b ChatGPT client-OAuth passthrough patch). |
+| `pylogging-config.yaml` | ConfigMap `litellm-pylogging` → `sitecustomize.py` (§8a structured uvicorn access logs + §8b ChatGPT client-OAuth passthrough patch + §8c spend-log credential scrub). |
 | `pdb.yaml`              | PodDisruptionBudget `minAvailable: 1`. |
 | `keys/`                 | Virtual-key provisioning base (separate apply; see below). |
 
@@ -163,6 +163,23 @@ When keys are out of sync (consumers 401, table wiped, or a forced rotation):
   with Claude Code turn traces in the Langfuse Sessions view.
 - OTLP/HTTP traces/metrics/logs are exported to the in-cluster OTel Collector in the
   `lgtm` plane on plain `:4318` with `/v1/{traces,metrics,logs}` paths.
+- **Max-capture posture** (`proxy-config.yaml` `litellm_settings`):
+  - The `s3_v2` callback archives the full `StandardLoggingPayload` JSON (messages,
+    response, tokens, cost, metadata) of every call — on success **and** failure — to the
+    in-cluster SeaweedFS bucket `litellm-payloads` (path-style S3; object keys prefixed by
+    team + virtual-key alias). The bucket is cluster-internal only and never published.
+  - `global_disable_no_log_param: true` — a client can **not** suppress logging with a
+    `no-log: true` request-body param; every callback always fires.
+  - Spend logs are **never purged** (`maximum_spend_logs_retention_period` is unset →
+    retain forever); the `x-litellm-spend-logs-metadata` header the agent CLIs send is
+    promoted to spend-log metadata and spend tags.
+  - Because retention is forever, the `sitecustomize.py` §8c patch scrubs the forwarded
+    subscription-credential VALUES (Authorization/Bearer, `chatgpt-account-id`,
+    `x-api-key`, cookies, …) out of the `proxy_server_request.body` snapshot LiteLLM
+    stores in every `LiteLLM_SpendLogs` row — it masks the credential carriers
+    (`extra_headers`, `metadata.headers`, `litellm_metadata.headers`) and drops the
+    duplicate `provider_specific_header`, while leaving the captured messages/response
+    and the live OAuth passthrough untouched.
 
 ## ChatGPT passthrough (shipped) + examples-only exclusions
 

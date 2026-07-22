@@ -10,11 +10,11 @@ store in the data plane and the biggest HA win from moving to three real nodes.
 |--------------|--------------------------------------------------|
 | Chart        | `seaweedfs`                                      |
 | Repo         | `https://seaweedfs.github.io/seaweedfs/helm`     |
-| Version      | **`4.37`** (pinned; resolves to `4.37.0`)        |
+| Version      | **`4.40.0`** (pinned)                            |
 | Release name | `langfuse-seaweedfs`                             |
 | Namespace    | `langfuse-data`                                  |
 | Values       | `values.yaml`                                    |
-| Image        | `chrislusf/seaweedfs:4.37` (multi-arch arm64+amd64) |
+| Image        | `chrislusf/seaweedfs:4.39` (multi-arch arm64+amd64) |
 
 The chart cadence is **very fast** (multiple bumps per week), so the pin must not
 float — re-verify on any bump. No Bitnami footprint.

@@ -167,3 +167,33 @@ otelcol.exporter.otlphttp "cluster" {
 		}
 	}
 }
+
+// ─── Claude Code raw API bodies ──────────────────────────────────────────────
+
+// Claude Code raw API bodies: untruncated request/response JSON, ONE FILE PER CALL
+// (<uuid>.request.json / <request_id>.response.json), single-line compact JSON.
+// start_at="beginning" is REQUIRED: each file is written once then closed, so "end"
+// captures nothing. include_file_path stamps log.file.path — the join key back to the
+// claude_code.api_request_body/api_response_body OTLP events' body_ref (which carry session.id).
+otelcol.receiver.filelog "claude_raw_bodies" {
+	include           = [sys.env("AI_INFRA_RAW_BODIES_DIR") + "/*.json"]
+	start_at          = "beginning"
+	include_file_path = true
+	resource          = {
+		"service.name"           = "claude-code-raw-bodies",
+		"host.name"              = constants.hostname,
+		"host.id"                = "mac-local",
+		"deployment.environment" = "ai-infra-platform-local",
+		"source"                 = "mac-host",
+	}
+	output { logs = [otelcol.processor.batch.raw_bodies.input] }
+}
+
+// Dedicated SMALL batch: bodies can be multi-MB; the otelcol batch bounds by COUNT,
+// so keep it tiny to stay under the collector's 64MiB OTLP request ceiling.
+otelcol.processor.batch "raw_bodies" {
+	send_batch_size     = 4
+	send_batch_max_size = 8
+	timeout             = "5s"
+	output { logs = [otelcol.exporter.otlphttp.cluster.input] }
+}

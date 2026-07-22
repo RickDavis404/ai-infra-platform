@@ -39,7 +39,7 @@ candidate_paths=(
   .env.*
   .fnox
   .local
-  .claude/otel-raw-bodies
+  .local/logs/claude/otel-raw-bodies
   .claude/settings.local.json
   .claude/state
   .codex/auth.json

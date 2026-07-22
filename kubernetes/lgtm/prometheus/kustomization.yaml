@@ -3,13 +3,13 @@ kind: Kustomization
 
 # Prometheus — standalone, StatefulSet + 2 replicas, hard anti-affinity, served
 # under the `/prometheus` route-prefix (§6.3.7 / §13.1.2). Inlined via Helm and
-# rendered with `kustomize build --enable-helm`. Pin is exact (chart 29.13.1); it
+# rendered with `kustomize build --enable-helm`. Pin is exact (chart 29.18.0); it
 # does not float. See README.md for the route-prefix gotcha and the documented
 # no-dedup 2-replica exception.
 helmCharts:
 - name: prometheus
   repo: https://prometheus-community.github.io/helm-charts
-  version: 29.13.1
+  version: 29.18.0
   releaseName: prometheus
   namespace: lgtm
   valuesFile: values.yaml

@@ -314,7 +314,10 @@ Explicit scope exclusions, each with a one-line reason:
 - **No Bitnami charts or images** (direct or transitive) — Langfuse bundled
   subcharts are all disabled.
 - **No managed / cloud datastores** — everything runs in-cluster.
-- **No project-level `CODEX_HOME`; no Claude / Codex provider secrets committed.**
+- **No project-level `CODEX_HOME`; no Claude / Codex provider secrets committed** — a bare
+  `codex` in a repo shell routes through the gateway via a committed `.config/bin/codex` PATH
+  launcher, and `mise run codex:global-config` merges its telemetry / trust config into your real
+  `~/.codex/config.toml` (see [`docs/developer-workflows.md`](docs/developer-workflows.md) §6).
 - **Optional / experimental, opt-in only:** L7 Cilium/Hubble policy-audit add-on,
   ClickHouse Keeper-quorum escalation, Barman PITR, Pyroscope / OpenLIT, the
   per-request client-OAuth passthrough monkeypatch, and the chatgpt-passthrough

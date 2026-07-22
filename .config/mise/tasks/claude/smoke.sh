@@ -30,7 +30,9 @@ otel_vip="${AI_INFRA_OTEL_VIP:-192.168.105.203}"
 [[ "${ANTHROPIC_BASE_URL:-}" == "http://${litellm_vip}:4000" ]] ||
   fail "FAIL: ANTHROPIC_BASE_URL is '${ANTHROPIC_BASE_URL:-<unset>}', not the LiteLLM VIP gateway — is the mise env loaded (run via 'mise run claude:smoke')?"
 [[ "${CLAUDE_CODE_ENABLE_TELEMETRY:-}" == "1" ]] || fail "FAIL: telemetry not enabled"
-[[ "${OTEL_LOG_USER_PROMPTS:-}" == "1" && "${OTEL_LOG_TOOL_DETAILS:-}" == "1" && "${OTEL_LOG_TOOL_CONTENT:-}" == "1" ]] ||
+[[ "${OTEL_LOG_USER_PROMPTS:-}" == "1" && "${OTEL_LOG_TOOL_DETAILS:-}" == "1" && "${OTEL_LOG_TOOL_CONTENT:-}" == "1" &&
+  "${OTEL_LOG_ASSISTANT_RESPONSES:-}" == "1" && "${CLAUDE_CODE_PROPAGATE_TRACEPARENT:-}" == "1" &&
+  "${OTEL_LOG_RAW_API_BODIES:-}" == file:*/.local/logs/claude/otel-raw-bodies ]] ||
   fail "FAIL: full-capture flags not all enabled"
 [[ "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" == *"${otel_vip}:4318/v1/traces" ]] ||
   fail "FAIL: OTLP traces endpoint not the OTel collector VIP /v1/traces"
@@ -42,6 +44,10 @@ otel_vip="${AI_INFRA_OTEL_VIP:-192.168.105.203}"
 if [[ -n "${ANTHROPIC_CUSTOM_HEADERS:-}" ]]; then
   [[ "${ANTHROPIC_CUSTOM_HEADERS}" == "x-litellm-api-key: Bearer "* ]] ||
     fail "FAIL: ANTHROPIC_CUSTOM_HEADERS not shaped 'x-litellm-api-key: Bearer <key>'"
+  # secret-env.sh appends a newline-separated spend-tag header (x-litellm-spend-logs-metadata:
+  # <JSON>) that LiteLLM promotes to spend TAGS — assert it rode along with the resolved key.
+  [[ "${ANTHROPIC_CUSTOM_HEADERS}" == *"x-litellm-spend-logs-metadata:"* ]] ||
+    fail "FAIL: ANTHROPIC_CUSTOM_HEADERS missing the appended 'x-litellm-spend-logs-metadata:' tag header"
 else
   warn "ANTHROPIC_CUSTOM_HEADERS unset — secret-env.sh could not resolve the virtual key (fnox/age unavailable?); skipping shape check"
 fi
@@ -59,8 +65,8 @@ jq -e '((.env // {}) | (has("ANTHROPIC_CUSTOM_HEADERS") or has("ANTHROPIC_API_KE
   "${s}" >/dev/null || fail "FAIL: settings.json .env carries a secret/auth var (env is mise-owned now)"
 git -C "${root}" check-ignore -q .claude/settings.local.json ||
   fail "FAIL: .claude/settings.local.json is not gitignored"
-git -C "${root}" check-ignore -q .claude/otel-raw-bodies/ ||
-  fail "FAIL: .claude/otel-raw-bodies/ is not gitignored"
+git -C "${root}" check-ignore -q .local/logs/claude/otel-raw-bodies/ ||
+  fail "FAIL: .local/logs/claude/otel-raw-bodies/ is not gitignored"
 if grep -Eiq '\.ts\.net|/Users/[a-z]|local-dev' "${s}"; then
   fail "FAIL: scrub-list token in settings.json"
 fi

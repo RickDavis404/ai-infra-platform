@@ -38,6 +38,16 @@ if [[ -d setup ]]; then
   done < <(find setup -type f -name '*.sh' | sort)
 fi
 
+# The repo-launcher bin dir holds EXTENSIONLESS shell wrappers (the committed `codex`
+# launcher MUST be named `codex` to shadow the mise-managed binary on PATH), so match
+# by shell shebang rather than a `.sh` suffix.
+if [[ -d .config/bin ]]; then
+  while IFS= read -r script_path; do
+    IFS= read -r first_line <"${script_path}" || true
+    [[ "${first_line}" == '#!'*sh* ]] && scripts+=("${script_path}")
+  done < <(find .config/bin -type f | sort)
+fi
+
 if [[ "${#scripts[@]}" -eq 0 ]]; then
   printf 'WARNING: no shell scripts found to lint.\n' >&2
   exit 0

@@ -12,10 +12,10 @@ kind: Kustomization
 # cluster-wide, scrape the targets, and remote_write to the Prometheus server. The
 # operator's reconcile loop is therefore unnecessary — only the API types are.
 #
-# Pinned to prometheus-operator v0.81.0 (the CRD YAMLs are vendored verbatim under
+# Pinned to prometheus-operator v0.92.1 (the CRD YAMLs are vendored verbatim under
 # crds/, fetched from
 # github.com/prometheus-operator/prometheus-operator/example/prometheus-operator-crd
-# at tag v0.81.0). Both serve a single stored version monitoring.coreos.com/v1.
+# at tag v0.92.1). Both serve a single stored version monitoring.coreos.com/v1.
 #
 # APPLY ORDER (k8s:apply): this overlay is applied EARLY — immediately after
 # `namespaces`, BEFORE operators / data-plane / lgtm — so the ServiceMonitor and

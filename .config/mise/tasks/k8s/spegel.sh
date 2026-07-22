@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-#MISE description="Install/upgrade Spegel 0.7.2 (peer-to-peer OCI mirror), wait for the DaemonSet rollout."
+#MISE description="Install/upgrade Spegel 0.7.4 (peer-to-peer OCI mirror), wait for the DaemonSet rollout."
 set -euo pipefail
 
-# k8s:spegel — install Spegel (https://github.com/spegel-org/spegel) 0.7.2, a
+# k8s:spegel — install Spegel (https://github.com/spegel-org/spegel) 0.7.4, a
 # peer-to-peer OCI registry mirror that runs as a DaemonSet on every node, idempotent.
 #
 # Spegel turns each node's containerd content store into a peer-shared mirror: once
@@ -43,7 +43,7 @@ readonly SPEGEL_DIR="${REPO_ROOT}/kubernetes/spegel"
 readonly SPEGEL_NS="spegel"
 readonly SPEGEL_RELEASE="spegel"
 readonly SPEGEL_REPO="oci://ghcr.io/spegel-org/helm-charts"
-readonly SPEGEL_VERSION="0.7.2"
+readonly SPEGEL_VERSION="0.7.4"
 readonly WAIT_TIMEOUT="${WAIT_TIMEOUT:-300s}"
 
 # Default cache address as committed in kubernetes/spegel/values.yaml. The env

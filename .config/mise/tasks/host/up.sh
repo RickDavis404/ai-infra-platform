@@ -34,6 +34,11 @@ readonly BIN_DIR="${HOME}/.local/bin"
 readonly CFG_DIR="${HOME}/.config/ai-infra"
 readonly LOG_DIR="${HOME}/Library/Logs/ai-infra"
 readonly AGENTS_DIR="${HOME}/Library/LaunchAgents"
+# Claude Code OTEL_LOG_RAW_API_BODIES target (repo-tree, per-clone): the host alloy
+# filelog tails this dir and ships each per-call JSON to Loki (alloy-config.alloy).
+# Must pre-exist (created in stage_scripts); substituted into the alloy plist's
+# AI_INFRA_RAW_BODIES_DIR by install_agent. Matches {{config_root}} of the writer env.
+readonly RAW_BODIES_DIR="${REPO_ROOT}/.local/logs/claude/otel-raw-bodies"
 
 # Agent labels and their source plist templates.
 readonly -a LABELS=(
@@ -45,7 +50,7 @@ readonly -a LABELS=(
 stage_scripts() {
   info "staging host-service scripts to ${BIN_DIR} (TCC: outside ~/Documents)"
   install -d "${BIN_DIR}" "${CFG_DIR}" "${LOG_DIR}" "${AGENTS_DIR}" \
-    "${HOME}/.local/state/ai-infra/alloy"
+    "${HOME}/.local/state/ai-infra/alloy" "${RAW_BODIES_DIR}"
 
   install -m 0755 "${MAC_SIDE}/llama-server-wrapper.sh" \
     "${BIN_DIR}/ai-infra-llama-server-wrapper.sh"
@@ -85,10 +90,12 @@ install_agent() {
   local src="${MAC_SIDE}/launchd/${label}.plist"
   local dst="${AGENTS_DIR}/${label}.plist"
   [[ -f "${src}" ]] || die "missing plist template: ${src}"
-  # Substitute the __HOME__ placeholder with the real home dir (never committed) and
-  # __LLAMA_SWAP_BIN__ with the resolved binary path (no-op for plists without it).
+  # Substitute the __HOME__ placeholder with the real home dir (never committed),
+  # __LLAMA_SWAP_BIN__ with the resolved binary path, and __RAW_BODIES_DIR__ with the
+  # Claude raw-bodies dir (the latter two are no-ops for plists without the placeholder).
   sed -e "s|__HOME__|${HOME}|g" \
     -e "s|__LLAMA_SWAP_BIN__|${LLAMA_SWAP_BIN}|g" \
+    -e "s|__RAW_BODIES_DIR__|${RAW_BODIES_DIR}|g" \
     "${src}" >"${dst}"
   chmod 0644 "${dst}"
 }

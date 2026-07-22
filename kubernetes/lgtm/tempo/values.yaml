@@ -87,8 +87,8 @@ tempo:
     traces_storage:
       path: /var/tempo/generator/traces
 
-  # 7-day block retention (compactor.compaction.block_retention).
-  retention: 168h
+  # 90-day block retention (compactor.compaction.block_retention).
+  retention: 2160h
 
   # Defaults applied to all tenants: activate the metrics generator and raise the
   # max bytes per trace to 64 MiB (67108864) to match the 64 MiB pipeline ceilings.
@@ -96,6 +96,12 @@ tempo:
     defaults:
       global:
         max_bytes_per_trace: 67108864
+      # Distributor truncates every span attribute at max_attribute_bytes (default 2048 B)
+      # — THE root cause of the ~2KB gen_ai.* I/O truncation in Tempo. Raise to the 64 MiB
+      # pipeline ceiling. MUST be a large POSITIVE value: 0 does NOT disable (falls back
+      # to the static 2048 default).
+      ingestion:
+        max_attribute_bytes: 67108864
       metrics_generator:
         processors:
           - local-blocks

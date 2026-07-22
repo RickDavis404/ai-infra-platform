@@ -36,6 +36,7 @@ done < <(
     -type d \( \
     -name .git -o \
     -path './secrets/age' -o \
+    -path './.config/codex' -o \
     -name 'rendered' -o \
     -name 'charts' -o \
     -name '.kustomize' \

@@ -117,9 +117,10 @@ instead of scattering across unrelated timestamps.
 Security defaults:
 
 - `secrets:*`, `codex:*`, and `claude:*` tasks are metadata-only.
-- `codex:launch` records a pre-`exec` handoff timestamp in `metadata.env`; a
-  successful `exec` replaces the shell, so no exit finalizer can run afterward.
-  (Claude has no launcher task — run `claude` directly; see §3.4 / §6.1.)
+- The `claude` / `codex` launcher tasks (and the retained `codex:launch`) record a
+  pre-`exec` handoff timestamp in `metadata.env`; a successful `exec` replaces the shell,
+  so no exit finalizer can run afterward. A bare `claude` / `codex` in a repo shell gets
+  the same env without a task; see §3.4 / §6.1.
 - Persisted streams are redacted for common secret shapes: bearer/basic auth,
   `x-litellm-api-key`, API key/token/password/private-key names, age secret
   keys, `sk-*` style keys, and credentials embedded in URLs.
@@ -179,8 +180,9 @@ Host-facing services are reached **directly by service VIP** on the shared L2; t
 | Task | Does |
 |---|---|
 | `host:up` / `host:down` / `host:status` | start / stop / status the Mac-side host services via `brew services` + launchd |
-| _(no `claude:launch`)_ | run `claude` **directly** — mise+fnox export the passthrough env on `cd`; `mise run` would force `--print` |
-| `codex:launch` | launch Codex with LiteLLM provider overrides (ignored keys injected via `--config`) |
+| `claude` / `codex` | launch Claude / Codex through the gateway with the full telemetry env (`raw=true`, real TTY); a bare `claude` / `codex` in a repo shell does the same (Codex via the committed `.config/bin/codex` PATH wrapper). `codex:launch` runs the same wrapper |
+| `claude:no-gateway` / `codex:no-gateway` | canary the direct provider path (Claude: unset the two `ANTHROPIC_*` vars; Codex: drop the `--config` provider overrides) with all telemetry still captured |
+| `codex:global-config` | merge the repo `[otel]`/trust/`[analytics]`/inert-provider blocks into `~/.codex/config.toml` (UTC-timestamped backup); run once per machine after `codex login` |
 
 ### 3.5 Secrets
 
@@ -208,9 +210,13 @@ Host-facing services are reached **directly by service VIP** on the shared L2; t
 | `smoke:ha` (+ `smoke:ha:node-loss` / `:pod-loss` / `:data-integrity` / `:recovery`) | failure-injection / reliability suite (checks the **service VIPs** + API VIP) |
 | `up` / `down` | whole-lab aggregators (bring up / tear down) |
 
-The `smoke` aggregator runs `k8s:cilium:smoke`, `langfuse:smoke`, `litellm:smoke`,
-`lgtm:smoke`, `otel:smoke`, and `host:smoke`; the additional per-plane file-tasks
-`lima:smoke`, `claude:smoke`, and `codex:smoke` can be run on their own.
+The `smoke` aggregator runs `k8s:cilium:smoke`, `host:smoke`, `models:check`,
+`langfuse:smoke`, `litellm:smoke`, `lgtm:smoke`, `otel:smoke`, and finally
+`litellm:verify-scrub` (the §8c spend-log credential-scrub regression gate — it
+reads the spend-log DB and asserts the newest chatgpt/anthropic passthrough rows
+are masked, or SKIPS cleanly when no gateway traffic exists yet); the additional
+per-plane file-tasks `lima:smoke`, `claude:smoke`, and `codex:smoke` can be run on
+their own.
 
 ## 4. Bootstrap flow
 
@@ -253,9 +259,45 @@ expanded steps, all via mise tasks (full demo in
    `claude-code`, `smoke-test`) via the idempotent key-mint Job and complete the
    headless Langfuse bootstrap.
 4. **Reach the UIs.** Browse the service VIPs directly (no port-forward): LiteLLM
-   `192.168.105.200:4000`, Langfuse `192.168.105.201:3000`, Grafana
-   `192.168.105.202:3000`, OTLP `192.168.105.203:4318`, Hubble `192.168.105.204`.
-   The `port-forward:*` tasks bind `127.0.0.1` as a non-HA fallback. All require credentials.
+   `192.168.105.200:4000` (append `/ui` for the admin console), Langfuse
+   `192.168.105.201:3000`, Grafana `192.168.105.202:3000`, OTLP `192.168.105.203:4318`,
+   Hubble `192.168.105.204`. The `port-forward:*` tasks bind `127.0.0.1` as a non-HA
+   fallback. **All require credentials** (below).
+
+**Reaching a remote/headless cluster host over SSH.** When the cluster runs on another machine
+(its VIPs are not on your L2), tunnel the three UI VIPs and browse `localhost` — verified live
+end-to-end against the remote host (open + curl + teardown all confirmed):
+
+```sh
+# open: three -L forwards on one ssh process
+ssh -f -N -L 24000:192.168.105.200:4000 -L 23000:192.168.105.201:3000 \
+       -L 22000:192.168.105.202:3000 <user>@<cluster-host>
+# health-check each leg
+curl -s  http://localhost:24000/health/liveliness                       # -> I'm alive!
+curl -s  http://localhost:23000/api/public/health                       # -> {"status":"OK","version":"3.210.0"}
+curl -so /dev/null -w '%{http_code}\n' http://localhost:22000/api/health # -> 200
+# tear down (kills exactly this forwarding process; frees all three ports)
+pkill -f '24000:192.168.105.200:4000'
+```
+
+**Credentials** (run on the cluster host; the secrets live in non-obvious namespaces). `kubectl`
+is only on `PATH` at an interactive mise prompt — over a bare non-interactive ssh use the
+absolute `"$(mise which kubectl)"` with `--kubeconfig "$KUBECONFIG"`:
+
+```sh
+# Grafana — user 'admin', http://<grafana>:3000  (secret is in ns 'lgtm', NOT grafana/monitoring)
+kubectl get secret grafana-admin -n lgtm -o jsonpath='{.data.admin-password}' | base64 -d; echo
+# LiteLLM — admin console http://<litellm>:4000/ui  — username 'admin', password = the master key:
+kubectl get secret litellm-app-secrets -n litellm -o jsonpath='{.data.LITELLM_MASTER_KEY}' | base64 -d; echo
+# Langfuse — http://<langfuse>:3000 — email is the literal admin@ai-infra-platform.example:
+kubectl get secret langfuse-app-secrets -n langfuse -o jsonpath='{.data.init-user-password}' | base64 -d; echo
+```
+
+Login notes: the LiteLLM UI has **no** separate `UI_USERNAME`/`UI_PASSWORD` — the master key
+*is* the UI password (username `admin`); reach it at `/ui` (bare `/` is the API root). The
+Langfuse login **email** is a plaintext literal in `kubernetes/langfuse/values.yaml`
+(`LANGFUSE_INIT_USER_EMAIL`), not a secret — only the password is secret-backed
+(`init-user-password`, key name drops the `LANGFUSE_` prefix).
 
 > **macOS 26 — a hands-off `mise run up` must keep its launching terminal/ssh
 > session alive for the whole run.** macOS Local Network privacy denies *detached*
@@ -293,44 +335,129 @@ CLIs on a fresh Mac (and the attended-GUI keychain gotcha for Claude) live in
 
 ### 6.1 Claude Code Max passthrough
 
-Configured via the committed `.claude/settings.json` (non-secret env) plus the
-generated, gitignored `.claude/settings.local.json` (secret references):
+The agent env is owned by **mise + fnox** — `conf.d/10-env.toml` `[env]` (non-secret
+routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth header);
+`.claude/settings.json` carries no env block. The generated, gitignored
+`.claude/settings.local.json` holds only secret references for the plugin surface:
 
 - `ANTHROPIC_BASE_URL = http://192.168.105.200:4000` routes all model requests
   through the LiteLLM gateway service VIP (changes *where* requests go, not *which*
   model answers; `http://127.0.0.1:34000` via `port-forward:litellm` is the fallback). There
   is **no `ANTHROPIC_API_KEY`** — proxy auth uses the virtual key in the
-  `x-litellm-api-key` header, and the client's subscription OAuth rides in
-  `Authorization`, forwarded unchanged and never logged.
+  `x-litellm-api-key` header (composed in `ANTHROPIC_CUSTOM_HEADERS`, which also carries an
+  `x-litellm-spend-logs-metadata` tag header that LiteLLM promotes to spend tags), and the
+  client's subscription OAuth rides in `Authorization`, forwarded unchanged and never logged.
 - Telemetry on: `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
   `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`; all three exporters are `otlp` over
   `http/protobuf` to the OTel Collector VIP `192.168.105.203:4318` with `/v1/*`
   paths (no `/otel` prefix; `127.0.0.1:34318` via `port-forward:otel` is the fallback).
 - `OTEL_RESOURCE_ATTRIBUTES = deployment.environment=ai-infra-platform-local` — the
   canonical environment identity (supersedes the source's bare `local-dev`).
-- Full-capture flags (privacy default-off, enabled in v1): `OTEL_LOG_USER_PROMPTS=1`,
-  `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, and
-  `OTEL_LOG_RAW_API_BODIES=file:${CLAUDE_PROJECT_DIR}/.claude/otel-raw-bodies`
-  (writes untruncated bodies to the gitignored raw-body dir — see the privacy
-  caveat in [`observability-taxonomy.md`](observability-taxonomy.md)).
+- Full-capture flags (privacy default-off, enabled here): `OTEL_LOG_USER_PROMPTS=1`,
+  `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, `OTEL_LOG_ASSISTANT_RESPONSES=1`,
+  and `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` (forces W3C traceparent into the gateway for
+  the CLI↔gateway span join). Raw bodies use **file mode**:
+  `OTEL_LOG_RAW_API_BODIES=file:{{config_root}}/.local/logs/claude/otel-raw-bodies`
+  (mise expands `{{config_root}}` to the repo root) writes untruncated request/response
+  JSON — one file per call — to the gitignored `.local/` tree and emits only a `body_ref`
+  attribute over OTLP. The host `grafana-alloy` filelog tails that dir and ships the bodies
+  to Loki, where `body_ref == log.file.path` rejoins them to the
+  `claude_code.api_request_body`/`api_response_body` events (see the privacy caveat in
+  [`observability-taxonomy.md`](observability-taxonomy.md)).
 - The `langfuse-observability` plugin (enabled via `enabledPlugins` +
   `extraKnownMarketplaces`) handles Claude Code -> Langfuse tracing.
 
 Run `claude` directly from the repo — mise+fnox export the passthrough env
-(`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) on `cd`. There is no `claude:launch`
-task; `mise run` would hand `claude` a non-TTY stdin and force it into `--print`.
+(`ANTHROPIC_BASE_URL`, `ANTHROPIC_CUSTOM_HEADERS`) on `cd` — or `mise run claude`, a
+`raw=true` task that preserves a real TTY (a plain `mise run` would hand `claude` a
+non-TTY stdin and force `--print`). `mise run claude:no-gateway` unsets
+`ANTHROPIC_BASE_URL`/`ANTHROPIC_CUSTOM_HEADERS` to canary the direct-to-Anthropic path
+with all telemetry still captured.
 
 ### 6.2 Codex subscription passthrough
 
-Configured via the created project `./.codex/config.toml` (honored keys) plus a
-root `AGENTS.md`; the `mise run codex:launch` task injects the ignored keys via
-`codex --config` overrides at launch time. There is **no project-level
-`CODEX_HOME`**. Codex routes through the LiteLLM gateway and uses the native
-`chatgpt/` device-flow provider for subscription passthrough; it mirrors the
-full-capture posture with `log_user_prompt = true` and the OTLP endpoints in its
-config. Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse VIP;
-the launcher derives the required Basic auth header from the existing Langfuse
-project API key pair and passes only the env-var reference through Codex config.
+Configured via the committed project `./.codex/config.toml` (honored keys — trust,
+`tool_output_token_limit`, MCP servers) plus a root `AGENTS.md`. There is **no
+project-level `CODEX_HOME`** — `~/.codex` is the only Codex home. A committed
+`.config/bin/codex` wrapper, prepended to `PATH` via mise `[env]` `_.path`, shadows the
+mise-managed binary and injects the keys Codex ignores at the project layer
+(`model_provider`, `base_url`, `wire_api = "responses"`, the proxy-auth + spend-tag
+`http_headers`) as `codex --config` overrides — so a **bare `codex` in a repo shell
+already routes through the gateway**. `mise run codex` is the equivalent `raw=true` task
+(the retained `codex:launch` runs the same wrapper); `mise run codex:no-gateway` drops the
+overrides to canary the built-in `chatgpt/` device-flow provider with telemetry still
+flowing. Codex mirrors the full-capture posture with `log_user_prompt = true` and the OTLP
+endpoints; those — plus project trust and `[analytics] enabled=false` — are merged into
+`~/.codex/config.toml` once per machine by `mise run codex:global-config` (UTC-timestamped
+backup). Langfuse MCP uses the native streamable HTTP endpoint at the Langfuse VIP; the
+wrapper derives the required Basic auth header from the existing Langfuse project API key
+pair and passes only the env-var reference through Codex config.
+
+**Codex → Langfuse client-side tracing (the codex-observability-plugin).** The LiteLLM
+gateway cannot capture codex assistant output over the streaming `/responses` path (the
+`BaseResponsesAPIStreamingIterator` bug — see `planning/langfuse-otel-comparison/`; the §8d
+monkeypatch recovers it into spend-logs/s3/gateway traces). For the **Langfuse** sink
+specifically, the official Langfuse **`tracing` plugin** captures codex **client-side**: a
+codex `Stop` hook re-reads each turn's rollout transcript and uploads a **separate** Langfuse
+trace (model responses incl. reasoning summaries, tool calls with I/O, subagents, token
+usage), **session-grouped** and correlated to the gateway trace by the codex session id. It
+bypasses the gateway streaming gap entirely (the data comes from the on-disk rollout, not the
+gateway response). Wiring is IaC:
+
+- **Install (per machine):** `mise run codex:install-plugins` runs `codex plugin marketplace
+  add langfuse/codex-observability-plugin` + `codex plugin add tracing@codex-observability-plugin`
+  into `~/.codex` (idempotent; timestamped backup; also offered by `mise run init`). `codex
+  plugin add` writes the `[marketplaces.*]` source and `[plugins."tracing@codex-observability-plugin"]
+  enabled = true` into the **user** config — so, like `[otel]`, enablement is managed per
+  machine, not hand-committed into the project `.codex/config.toml`. On the pinned codex
+  `0.144.1` the `hooks`/`plugins` features are stable-on by default (the legacy `[features]
+  plugin_hooks` flag is **removed**), so no feature flag is set. Requires codex ≥ 0.128 (repo
+  pins 0.144.1) and **Node ≥ 22** at hook runtime (repo pins node 24).
+- **Env (via mise):** `TRACE_TO_LANGFUSE=true` + `LANGFUSE_CODEX_MAX_CHARS=67108864` in
+  `conf.d/10-env.toml`; `LANGFUSE_BASE_URL` (Langfuse VIP) already templated there; the
+  `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` pair (already fnox-sealed for the MCP header) is
+  exported by `secret-env.sh`. The plugin fails open (a tracing error never blocks codex).
+- **Hook trust (one-time per machine, like the Claude keychain ACL):** codex runs an enabled
+  hook only after its source is trusted. The **first interactive `codex` turn** in the repo
+  prompts to trust the Langfuse `Stop` hook — approve once (persists). Headless automation
+  passes `codex exec --dangerously-bypass-hook-trust` (the hook source is the pinned, committed
+  plugin). Until trusted/bypassed the hook silently does not fire. Note: `mise run codex:smoke`
+  runs `codex exec --ignore-user-config`, so it does **not** load the plugin — it verifies
+  gateway routing only; plugin capture is exercised by a real repo-dir interactive turn (or the
+  bypass flag).
+
+**Gateway Langfuse callback + codex output capture (posture).** The gateway logs Langfuse via
+the **classic `langfuse`** success/failure callback (`kubernetes/litellm/proxy-config.yaml`
+`success_callback: ["langfuse"]`), **not** `langfuse_otel`. The `langfuse_otel` switch was
+trialed end-to-end and **reverted**: it did not fix codex output *and* it regressed signals the
+classic path emits for free — per-generation TTFT (`completion_start_time`) and
+`langfuse_default_tags` are classic-only in LiteLLM and the OTLP exporter never sets them. The
+codex assistant text is empty in `standard_logging_object["response"]` because LiteLLM's
+real-streaming `BaseResponsesAPIStreamingIterator._process_chunk` stores ChatGPT's
+empty-`output` terminal event and never runs the SSE output-recovery its own *buffered* path
+uses — a LiteLLM bug (intended for upstream filing), proven independent of routing (wildcard vs
+explicit model_list) and auth (client-forwarded vs server-held device-flow token). The committed
+**§8d** sitecustomize (`kubernetes/litellm/pylogging-config.yaml`) reconstructs `output` at the
+streaming-iterator layer — accumulating `output_item.done`/`output_text.done` events and
+backfilling the empty terminal event via LiteLLM's own `sse_output_recovery` helpers — so **every
+gateway sink** (spend-logs, s3_v2, the classic Langfuse trace) captures codex output at the
+source; a co-located **§8d-classic** hook unwraps it onto the Langfuse generation. The
+codex-observability-plugin above is the complementary **client-side** Langfuse path. Full
+analysis lives in `planning/langfuse-otel-comparison/` (`DEBUG-codex-capture.md`,
+`OFFICIAL-CHATGPT-PASSTHROUGH-TEST.md` — local, gitignored).
+
+**Future ticket — codex↔LiteLLM WebSocket transport.** An empirical probe
+(`planning/langfuse-otel-comparison/WEBSOCKET-PROBE.md`, gitignored) confirmed that flipping the
+custom provider's `supports_websockets=true` makes codex open a real WS upgrade to
+`ws://192.168.105.200:4000/v1/responses` (LiteLLM's native Responses-API WS route). LiteLLM
+**403s** the handshake because its WS-auth reads the proxy key **only** from `Authorization` —
+which in our two-header split carries the *ChatGPT* OAuth JWT, while the virtual key rides in
+`x-litellm-api-key` (which WS-auth never reads); codex then **falls back to HTTP-SSE gracefully**
+(non-fatal, ~42 ms). Enabling WS is a bounded project, not a flag flip: a LiteLLM WS-auth patch
+to accept `x-litellm-api-key` (without consuming `Authorization`) + a managed-WS §8b
+header-forwarding re-confirmation + a codex↔LiteLLM wire-protocol compat pass. Keep
+`supports_websockets=false` until all three close; WS is a transport-efficiency change, **not** a
+capture fix (§8d still required on the WS path).
 
 ```mermaid
 flowchart LR

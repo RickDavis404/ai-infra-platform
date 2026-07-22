@@ -1,4 +1,4 @@
-# Spegel v0.7.2 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
+# Spegel v0.7.4 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
 # Pinned in kustomization.yaml; this file is the committed, declarative config.
 # See README.md for provenance and the peer-to-peer-mirror rationale.
 #
@@ -53,6 +53,36 @@ spegel:
   # Resolve tags to digests so peers can be addressed by content digest (required for
   # reliable peer routing). Default, set explicitly for clarity.
   resolveTags: true
+
+# --- Registry host port — MUST stay OUTSIDE Cilium's NodePort range ---
+# Spegel exposes each node's registry on a HOST PORT and makes
+# http://$(NODE_IP):<hostPort> the FIRST containerd mirror-target (the chart's
+# `configuration` init container writes it into /etc/containerd/certs.d; see also
+# patches/registry-clusterip.yaml). This host-port hop is how containerd on a node
+# reaches its LOCAL Spegel, and how a peer reaches a remote node's Spegel.
+#
+# The chart default is 30020 — which lands INSIDE the kube-proxy-replacement NodePort
+# range (30000-32767). Under Cilium `kubeProxyReplacement: true` hostPort and NodePort
+# share the SAME eBPF LB datapath, so Cilium deliberately REFUSES to program any
+# hostPort that collides with the NodePort range, logging (cilium-agent):
+#   level=warn msg="The requested hostPort is colliding with the configured NodePort
+#   range. Ignoring." hostPort=30020 nodePortMin=30000 nodePortMax=32767
+# Consequence: <NODE_IP>:30020 is never programmed into the BPF LB map, containerd's
+# mirror dial fail-fasts, EVERY pull falls through to the cache/upstream, and
+# spegel_mirror_last_success stays 0 on all nodes since bring-up. (hostPorts BELOW the
+# range — e.g. the otel-collector's 4317/4318/9411 — program fine, confirming this is a
+# range-collision, NOT a broken-hostPort or missing-flag issue.)
+#
+# FIX: pin the registry hostPort BELOW 30000 so Cilium programs it. 29020 is free on the
+# node host netns and outside 30000-32767. The chart derives BOTH the hostPort binding
+# AND the http://$(NODE_IP):<hostPort> mirror-target from this single value, so local and
+# peer mirroring both follow the corrected port. (service.registry.nodePort is left at the
+# chart default 30021 — it only feeds a secondary mirror-target string; the registry
+# Service itself is demoted to ClusterIP by patches/registry-clusterip.yaml, so no
+# NodePort surface is created.)
+service:
+  registry:
+    hostPort: 29020
 
 # --- Scheduling: run on ALL nodes including control-plane ---
 # Every node in this cluster is a control-plane node (3x stacked-etcd CP), and the

@@ -1,4 +1,4 @@
-# Cilium v1.20.0-pre.3 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
+# Cilium v1.20.0-rc.0 Helm values for the ai-infra-platform 3-node HA kubeadm cluster.
 # Pinned in kustomization.yaml; this file is the committed, declarative config.
 # See README.md for provenance, and decision D005 + research feedback-v2/
 # ha-networking.md §2 for the kube-proxy-free + service-VIP rationale.

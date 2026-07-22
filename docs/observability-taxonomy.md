@@ -48,6 +48,16 @@ Standard values and rules:
   with `user_api_key_alias`, `user_api_key_team_alias`, `user_api_key_user_email`,
   `model_group`, `cache_hit`, and `proxy_base_url`. The v1 consumer key aliases
   are `codex`, `claude-code`, and `smoke-test`; the team alias is `agents`.
+- **Gateway Langfuse callback = classic `langfuse`.** The gateway logs traces via the
+  classic `langfuse` success/failure callback (`proxy-config.yaml`
+  `success_callback: ["langfuse"]`), **not** `langfuse_otel`. The OTLP callback was
+  trialed end-to-end and **reverted**: it dropped per-generation TTFT
+  (`completion_start_time`) and the `langfuse_default_tags` above — both LiteLLM
+  classic-path-only — while **not** fixing codex output. Codex `/responses` streaming
+  output is empty at the LiteLLM source (a `BaseResponsesAPIStreamingIterator` bug) and
+  is reconstructed by the **§8d** sitecustomize before any sink reads it, so it lands in
+  spend-logs, s3_v2, and the classic Langfuse trace alike; see
+  [`developer-workflows.md`](developer-workflows.md) §6.2.
 
 ## 2. Signal routing (per backend)
 

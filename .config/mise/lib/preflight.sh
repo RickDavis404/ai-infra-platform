@@ -37,9 +37,9 @@ _pf_b2g() { awk -v b="$1" 'BEGIN{printf "%.1f", b/1073741824}'; }  # bytes -> Gi
 # are the profile TOTAL requirement incl. the host-service allowance.
 _pf_req() {
   case "$1" in
-    lean) echo "6 12.5 50 1 6 12 50" ;;
-    ha) echo "9 28.5 150 3 3 9 50" ;;
-    *) echo "" ;;
+  lean) echo "6 12.5 50 1 6 12 50" ;;
+  ha) echo "9 28.5 150 3 3 9 50" ;;
+  *) echo "" ;;
   esac
 }
 

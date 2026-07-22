@@ -9,7 +9,7 @@ plane. Namespace `lgtm`.
 |---|---|
 | Chart | `grafana` |
 | Repo | `https://grafana-community.github.io/helm-charts` |
-| Version (pinned) | `12.7.1` |
+| Version (pinned) | `12.7.3` |
 | Release name | `grafana` |
 | Namespace | `lgtm` |
 

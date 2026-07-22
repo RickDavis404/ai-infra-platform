@@ -1,0 +1,549 @@
+# Langfuse V4 events-schema migration — IaC replacement for the hand-run DDL.
+#
+# WHY THIS EXISTS: langfuse-web sets LANGFUSE_MIGRATION_V4_WRITE_MODE=dual (see
+# kubernetes/langfuse/values.yaml). In `dual` mode the worker enqueues every
+# observation/trace into ClickHouse `observations_batch_staging` and schedules an
+# EventPropagationQueue job that anti-joins `events_core`. Those four V4 objects
+# (observations_batch_staging / events_full / events_core / events_core_mv) are
+# DELIBERATELY excluded from langfuse's production ClickHouse migrations
+# (packages/shared/clickhouse/scripts/dev-tables.sh says so: they depend on CH
+# features — enable_block_number_column, text/full-text indexes — that self-hosters
+# on <25.x lack), so langfuse's autoMigrate never creates them. Missing, the worker
+# storms ~10 err/min and DROPS staging records. The LEGACY traces/observations/scores
+# path is unaffected and is NOT touched here.
+#
+# This Job ships those objects as declarative IaC. The DDL is the authoritative
+# v3.222.0 dev-tables.sh definition, adapted for this Altinity CHI:
+#   * every CREATE/ALTER carries `ON CLUSTER 'default'` (the operator's `default`
+#     remote_servers cluster — see chi.yaml), so DDL applies uniformly across both
+#     replicas; and
+#   * ReplacingMergeTree(event_ts, is_deleted) -> ReplicatedReplacingMergeTree(
+#     event_ts, is_deleted) with NO explicit ZooKeeper path — exactly how langfuse
+#     migration 0024 writes dataset_run_items_rmt on this cluster. The operator's
+#     default_replica_path/default_replica_name macros expand the no-arg form to
+#     `/clickhouse/tables/{uuid}/{shard}` + `{replica}` (verified live), so hard-coding
+#     a path is both unnecessary and wrong (it would collide across the two replicas).
+# Every statement is IF NOT EXISTS, so the Job is a safe no-op once the schema exists.
+#
+# IDEMPOTENCY / RE-APPLY: the Job name and its ConfigMap name are STABLE and the pod
+# template is content-stable, so `mise run up` re-applies it as a server-side no-op —
+# an already-Complete Job stays Complete and does NOT re-run (this is why NO
+# ttlSecondsAfterFinished is set: a TTL would GC the Job and make every later apply
+# re-run it). If the DDL below is edited, delete the completed Job so it re-runs, or
+# apply.sh's immutable-Job path recreates it when the template itself changes.
+#
+# ORDERING / COLD START: apply.sh applies the whole langfuse-data overlay and only
+# THEN waits for the CHI to report Completed, so this Job's pod can start before
+# ClickHouse is serving. The container therefore polls `SELECT 1` before running the
+# DDL, and restartPolicy: OnFailure + backoffLimit ride out an ON CLUSTER DDL that
+# briefly can't reach the second replica on a from-bare bring-up.
+#
+# NO BACKFILL: the tables populate from Job-apply time forward (worker propagation,
+# ~10-min lag); there is no historic backfill of pre-existing traces.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: langfuse-ch-events-schema
+  namespace: langfuse-data
+  labels:
+    app.kubernetes.io/name: langfuse-ch
+    app.kubernetes.io/component: events-schema
+    app.kubernetes.io/part-of: ai-infra-platform
+data:
+  events-schema.sql: |
+    -- Langfuse V4 events pipeline — authoritative v3.222.0 dev-tables.sh DDL,
+    -- adapted ON CLUSTER 'default' + ReplicatedReplacingMergeTree (no ZK path).
+    -- Every statement is IF NOT EXISTS: safe to run on every apply.
+
+    -- Staging table for the dual-write pipeline that populates events_full.
+    -- Ingestion writes every observation (and trace-as-synthetic-observation) here
+    -- with an s3_first_seen_timestamp; the worker's event-propagation job reads
+    -- completed 3-minute partitions, joins them with `traces`, and inserts into
+    -- events_full. Partitions expire after 48h via TTL (ttl_only_drop_parts drops
+    -- only whole partitions, never individual rows).
+    CREATE TABLE IF NOT EXISTS observations_batch_staging ON CLUSTER 'default'
+    (
+        id String,
+        trace_id String,
+        project_id String,
+        type LowCardinality(String),
+        parent_observation_id Nullable(String),
+        start_time DateTime64(3),
+        end_time Nullable(DateTime64(3)),
+        name String,
+        metadata Map(LowCardinality(String), String),
+        level LowCardinality(String),
+        status_message Nullable(String),
+        version Nullable(String),
+        input Nullable(String) CODEC(ZSTD(3)),
+        output Nullable(String) CODEC(ZSTD(3)),
+        provided_model_name Nullable(String),
+        internal_model_id Nullable(String),
+        model_parameters Nullable(String),
+        provided_usage_details Map(LowCardinality(String), UInt64),
+        usage_details Map(LowCardinality(String), UInt64),
+        provided_cost_details Map(LowCardinality(String), Decimal64(12)),
+        cost_details Map(LowCardinality(String), Decimal64(12)),
+        total_cost Nullable(Decimal64(12)),
+        usage_pricing_tier_id Nullable(String),
+        usage_pricing_tier_name Nullable(String),
+        tool_definitions Map(String, String),
+        tool_calls Array(String),
+        tool_call_names Array(String),
+        completion_start_time Nullable(DateTime64(3)),
+        prompt_id Nullable(String),
+        prompt_name Nullable(String),
+        prompt_version Nullable(UInt16),
+        created_at DateTime64(3) DEFAULT now(),
+        updated_at DateTime64(3) DEFAULT now(),
+        event_ts DateTime64(3),
+        is_deleted UInt8,
+        s3_first_seen_timestamp DateTime64(3),
+        environment LowCardinality(String) DEFAULT 'default'
+    )
+    ENGINE = ReplicatedReplacingMergeTree(event_ts, is_deleted)
+    PARTITION BY toStartOfInterval(s3_first_seen_timestamp, INTERVAL 3 MINUTE)
+    PRIMARY KEY (project_id, toDate(s3_first_seen_timestamp))
+    ORDER BY (
+        project_id,
+        toDate(s3_first_seen_timestamp),
+        trace_id,
+        id
+    )
+    TTL s3_first_seen_timestamp + INTERVAL 48 HOUR
+    SETTINGS ttl_only_drop_parts = 1;
+
+    -- events_full is the immutable, full-fidelity event table that will eventually
+    -- replace observations. Populated by the worker propagation job that joins
+    -- observations_batch_staging with traces and dataset_run_items.
+    CREATE TABLE IF NOT EXISTS events_full ON CLUSTER 'default'
+    (
+        project_id String,
+        trace_id String,
+        span_id String,
+        parent_span_id String,
+
+        start_time DateTime64(6),
+        end_time Nullable(DateTime64(6)),
+
+        -- Core properties
+        name String,
+        type LowCardinality(String),
+        environment LowCardinality(String) DEFAULT 'default',
+        version String,
+        release String,
+        trace_name String,
+        user_id String,
+        session_id String,
+        tags Array(String),
+        level LowCardinality(String),
+        status_message String,
+        completion_start_time Nullable(DateTime64(6)),
+        is_app_root Bool DEFAULT false,
+
+        -- Updateable properties
+        bookmarked Bool DEFAULT false,
+        public Bool DEFAULT false,
+
+        -- Prompt
+        prompt_id String,
+        prompt_name String,
+        prompt_version Nullable(UInt16),
+
+        -- Model
+        model_id String,
+        provided_model_name String,
+        model_parameters String,
+
+        -- Usage and Cost
+        provided_usage_details Map(LowCardinality(String), UInt64),
+        usage_details Map(LowCardinality(String), UInt64),
+        provided_cost_details Map(LowCardinality(String), Decimal(18,12)),
+        cost_details Map(LowCardinality(String), Decimal(18,12)),
+        calculated_input_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, cost_details))),
+        calculated_output_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, cost_details))),
+        calculated_total_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x ->
+            positionCaseInsensitive(x.1, 'input') > 0 OR positionCaseInsensitive(x.1, 'output') > 0, cost_details))),
+        total_cost Decimal(18, 12) ALIAS cost_details['total'],
+
+        usage_pricing_tier_id Nullable(String),
+        usage_pricing_tier_name Nullable(String),
+
+        -- Tools
+        tool_definitions Map(String, String),
+        tool_calls Array(String),
+        tool_call_names Array(String),
+
+        -- I/O
+        input String CODEC(ZSTD(3)),
+        input_length UInt64 MATERIALIZED lengthUTF8(input),
+        output String CODEC(ZSTD(3)),
+        output_length UInt64 MATERIALIZED lengthUTF8(output),
+
+        -- Metadata
+        metadata_names Array(String),
+        metadata_values Array(String),
+
+        -- Experiment properties
+        experiment_id String,
+        experiment_name String,
+        experiment_metadata_names Array(String),
+        experiment_metadata_values Array(String),
+        experiment_description String,
+        experiment_dataset_id String,
+        experiment_item_id String,
+        experiment_item_version Nullable(DateTime64(6)),
+        experiment_item_expected_output String,
+        experiment_item_metadata_names Array(String),
+        experiment_item_metadata_values Array(String),
+        experiment_item_root_span_id String,
+
+        -- Source metadata (Instrumentation)
+        source LowCardinality(String),
+        service_name String,
+        service_version String,
+        scope_name String,
+        scope_version String,
+        telemetry_sdk_language LowCardinality(String),
+        telemetry_sdk_name String,
+        telemetry_sdk_version String,
+
+        -- Generic props
+        blob_storage_file_path String,
+        event_bytes UInt64,
+        created_at DateTime64(6) DEFAULT now(),
+        updated_at DateTime64(6) DEFAULT now(),
+        event_ts DateTime64(6),
+        is_deleted UInt8,
+
+        -- Indexes
+        INDEX idx_span_id span_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_user_id user_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_session_id session_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_created_at created_at TYPE minmax GRANULARITY 1,
+        INDEX idx_updated_at updated_at TYPE minmax GRANULARITY 1,
+        INDEX idx_fts_input_low lower(input) TYPE text(tokenizer = splitByNonAlpha),
+        INDEX idx_fts_output_low lower(output) TYPE text(tokenizer = splitByNonAlpha),
+        INDEX idx_fts_metadata_values metadata_values TYPE text(tokenizer = splitByNonAlpha),
+        INDEX idx_fts_metadata_names metadata_names TYPE text(tokenizer = splitByNonAlpha)
+    )
+    ENGINE = ReplicatedReplacingMergeTree(event_ts, is_deleted)
+    PARTITION BY toYYYYMM(start_time)
+    PRIMARY KEY (project_id, toStartOfMinute(start_time), xxHash32(trace_id))
+    ORDER BY (project_id, toStartOfMinute(start_time), xxHash32(trace_id), span_id, start_time)
+    SAMPLE BY xxHash32(trace_id)
+    SETTINGS
+        index_granularity_bytes = '64Mi', -- Default 10MiB. Prevents very small granules due to large rows.
+        merge_max_block_size_bytes = '64Mi',
+        enable_block_number_column = 1,
+        enable_block_offset_column = 1,
+        prewarm_mark_cache = 1,
+        prewarm_primary_key_cache = 1,
+        enable_full_text_index = 1;
+
+    -- events_core is the lightweight, query-optimized projection of events_full with
+    -- truncated input/output/metadata. Populated via events_core_mv below.
+    CREATE TABLE IF NOT EXISTS events_core ON CLUSTER 'default'
+    (
+        project_id String,
+        trace_id String,
+        span_id String,
+        parent_span_id String,
+
+        start_time DateTime64(6),
+        end_time Nullable(DateTime64(6)),
+
+        -- Core properties
+        name String,
+        type LowCardinality(String),
+        environment LowCardinality(String) DEFAULT 'default',
+        version String,
+        release String,
+        trace_name String,
+        user_id String,
+        session_id String,
+        tags Array(String),
+        level LowCardinality(String),
+        status_message String,
+        completion_start_time Nullable(DateTime64(6)),
+        is_app_root Bool DEFAULT false,
+
+        -- Updateable properties
+        bookmarked Bool DEFAULT false,
+        public Bool DEFAULT false,
+
+        -- Prompt
+        prompt_id String,
+        prompt_name String,
+        prompt_version Nullable(UInt16),
+
+        -- Model
+        model_id String,
+        provided_model_name String,
+        model_parameters String,
+
+        -- Usage
+        provided_usage_details Map(LowCardinality(String), UInt64),
+        usage_details Map(LowCardinality(String), UInt64),
+        provided_cost_details Map(LowCardinality(String), Decimal(18,12)),
+        cost_details Map(LowCardinality(String), Decimal(18,12)),
+        calculated_input_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'input') > 0, cost_details))),
+        calculated_output_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x -> positionCaseInsensitive(x.1, 'output') > 0, cost_details))),
+        calculated_total_cost Decimal(18, 12) MATERIALIZED arraySum(mapValues(mapFilter(x ->
+            positionCaseInsensitive(x.1, 'input') > 0 OR positionCaseInsensitive(x.1, 'output') > 0, cost_details))),
+        total_cost Decimal(18, 12) ALIAS cost_details['total'],
+
+        usage_pricing_tier_id Nullable(String),
+        usage_pricing_tier_name Nullable(String),
+
+        -- Tools
+        tool_definitions Map(String, String),
+        tool_calls Array(String),
+        tool_call_names Array(String),
+
+        -- I/O
+        input String,
+        input_length UInt64 MATERIALIZED lengthUTF8(input),
+        output String,
+        output_length UInt64 MATERIALIZED lengthUTF8(output),
+
+        -- Metadata
+        metadata_names Array(String),
+        metadata_values Array(String),
+
+        -- Experiment properties
+        experiment_id String,
+        experiment_name String,
+        experiment_metadata_names Array(String),
+        experiment_metadata_values Array(String),
+        experiment_description String,
+        experiment_dataset_id String,
+        experiment_item_id String,
+        experiment_item_version Nullable(DateTime64(6)),
+        experiment_item_expected_output String,
+        experiment_item_metadata_names Array(String),
+        experiment_item_metadata_values Array(String),
+        experiment_item_root_span_id String,
+
+        -- Source metadata (Instrumentation)
+        source LowCardinality(String),
+        service_name String,
+        service_version String,
+        scope_name String,
+        scope_version String,
+        telemetry_sdk_language LowCardinality(String),
+        telemetry_sdk_name String,
+        telemetry_sdk_version String,
+
+        -- Generic props
+        blob_storage_file_path String,
+        event_bytes UInt64,
+        created_at DateTime64(6) DEFAULT now(),
+        updated_at DateTime64(6) DEFAULT now(),
+        event_ts DateTime64(6),
+        is_deleted UInt8,
+
+        -- Indexes
+        INDEX idx_span_id span_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_trace_id trace_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_user_id user_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_session_id session_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_created_at created_at TYPE minmax GRANULARITY 1,
+        INDEX idx_updated_at updated_at TYPE minmax GRANULARITY 1,
+        INDEX idx_provided_model_name provided_model_name TYPE bloom_filter(0.01) GRANULARITY 2,
+        INDEX idx_experiment_id experiment_id TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_metadata_names metadata_names TYPE bloom_filter(0.01) GRANULARITY 1,
+        INDEX idx_fts_metadata_values metadata_values TYPE text(tokenizer = splitByNonAlpha),
+        INDEX idx_fts_metadata_names metadata_names TYPE text(tokenizer = splitByNonAlpha)
+    )
+    ENGINE = ReplicatedReplacingMergeTree(event_ts, is_deleted)
+    PARTITION BY toYYYYMM(start_time)
+    PRIMARY KEY (project_id, toStartOfMinute(start_time), xxHash32(trace_id))
+    ORDER BY (project_id, toStartOfMinute(start_time), xxHash32(trace_id), span_id, start_time)
+    SAMPLE BY xxHash32(trace_id)
+    SETTINGS
+        enable_block_number_column = 1,
+        enable_block_offset_column = 1,
+        prewarm_mark_cache = 1,
+        prewarm_primary_key_cache = 1,
+        enable_full_text_index = 1;
+        -- cache_populated_by_fetch = 1; -- Not available in OSS ClickHouse
+
+    -- Materialized view to populate events_core from events_full.
+    CREATE MATERIALIZED VIEW IF NOT EXISTS events_core_mv ON CLUSTER 'default' TO events_core AS
+    SELECT
+        project_id,
+        trace_id,
+        span_id,
+        parent_span_id,
+        start_time,
+        end_time,
+        name,
+        type,
+        environment,
+        version,
+        release,
+        trace_name,
+        user_id,
+        session_id,
+        tags,
+        level,
+        status_message,
+        completion_start_time,
+        is_app_root,
+        bookmarked,
+        public,
+        prompt_id,
+        prompt_name,
+        prompt_version,
+        model_id,
+        provided_model_name,
+        model_parameters,
+        provided_usage_details,
+        usage_details,
+        provided_cost_details,
+        cost_details,
+        usage_pricing_tier_id,
+        usage_pricing_tier_name,
+        tool_definitions,
+        tool_calls,
+        tool_call_names,
+        leftUTF8(input, 200) as input,
+        leftUTF8(output, 200) as output,
+        metadata_names,
+        arrayMap(v -> leftUTF8(v, 200), metadata_values) as metadata_values,
+        experiment_id,
+        experiment_name,
+        experiment_metadata_names,
+        experiment_metadata_values,
+        experiment_description,
+        experiment_dataset_id,
+        experiment_item_id,
+        experiment_item_version,
+        experiment_item_expected_output,
+        experiment_item_metadata_names,
+        experiment_item_metadata_values,
+        experiment_item_root_span_id,
+        source,
+        service_name,
+        service_version,
+        scope_name,
+        scope_version,
+        telemetry_sdk_language,
+        telemetry_sdk_name,
+        telemetry_sdk_version,
+        blob_storage_file_path,
+        event_bytes,
+        created_at,
+        updated_at,
+        event_ts,
+        is_deleted
+    FROM events_full;
+
+    -- Event metadata substring acceleration (post-create ADD INDEX, per dev-tables.sh).
+    ALTER TABLE events_full ON CLUSTER 'default' ADD INDEX IF NOT EXISTS idx_fts_metadata_values_ngram arrayStringConcat(metadata_values)
+      TYPE ngrambf_v1(4, 32000, 3, 0) GRANULARITY 2 SETTINGS enable_full_text_index = 1;
+    ALTER TABLE events_core ON CLUSTER 'default' ADD INDEX IF NOT EXISTS idx_fts_metadata_values_ngram arrayStringConcat(metadata_values)
+      TYPE ngrambf_v1(4, 32000, 3, 0) GRANULARITY 2 SETTINGS enable_full_text_index = 1;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: langfuse-ch-events-schema
+  namespace: langfuse-data
+  labels:
+    app.kubernetes.io/name: langfuse-ch
+    app.kubernetes.io/component: events-schema
+    app.kubernetes.io/part-of: ai-infra-platform
+spec:
+  # Ride out a from-bare cold start: the pod can be scheduled before the CHI is
+  # Completed, and an ON CLUSTER DDL briefly can't reach the second replica. The
+  # in-container SELECT-1 poll handles the common case; OnFailure + backoffLimit
+  # cover a DDL that fails while the cluster is still forming.
+  backoffLimit: 20
+  # NO ttlSecondsAfterFinished on purpose: keep the Complete Job so re-apply is a
+  # true no-op instead of GC'ing it and re-running on the next `mise run up`.
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: langfuse-ch
+        app.kubernetes.io/component: events-schema
+        app.kubernetes.io/part-of: ai-infra-platform
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101 # clickhouse
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: apply-events-schema
+          # SAME image as the CHI (chi.yaml) — clickhouse-client ships in the server
+          # image, so no new pin. Pinned tag: IfNotPresent to avoid re-pulling on
+          # idempotent re-applies (docker.io anonymous pull-rate 429).
+          image: clickhouse/clickhouse-server:26.3.17.56@sha256:422be85ae7344058369cdd366ac0efea9daa8428b55c9cf50258e83a7d12fcb3
+          imagePullPolicy: IfNotPresent
+          env:
+            # clickhouse-client reads CLICKHOUSE_PASSWORD from the env, so the
+            # secret never lands on the process arg list.
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: langfuse-shared-passwords
+                  key: clickhouse-password
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              host="clickhouse-langfuse-ch.langfuse-data.svc.cluster.local"
+              echo "[events-schema] waiting for ClickHouse at ${host}:9000 ..."
+              attempt=0
+              until clickhouse-client --host "${host}" --port 9000 --user default \
+                      --query "SELECT 1" >/dev/null 2>&1; do
+                attempt=$((attempt + 1))
+                if [ "${attempt}" -ge 120 ]; then
+                  echo "[events-schema] ClickHouse still unreachable after ${attempt} attempts;" \
+                       "exiting non-zero for Job backoff retry" >&2
+                  exit 1
+                fi
+                echo "[events-schema] attempt ${attempt}: not ready; sleeping 5s"
+                sleep 5
+              done
+              echo "[events-schema] ClickHouse reachable; applying V4 events schema" \
+                   "(idempotent, every statement IF NOT EXISTS)"
+              clickhouse-client --host "${host}" --port 9000 --user default \
+                --multiquery < /sql/events-schema.sql
+              echo "[events-schema] V4 events schema applied ON CLUSTER 'default'"
+          volumeMounts:
+            - name: ddl
+              mountPath: /sql
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      volumes:
+        - name: ddl
+          configMap:
+            name: langfuse-ch-events-schema
+            items:
+              - key: events-schema.sql
+                path: events-schema.sql
+        - name: tmp
+          emptyDir: {}

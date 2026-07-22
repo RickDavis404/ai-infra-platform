@@ -2,14 +2,14 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # SeaweedFS S3 blob store for Langfuse, inlined via Helm and rendered with
-# `kustomize build --enable-helm`. Pin is exact (4.37); the chart cadence is very
+# `kustomize build --enable-helm`. Pin is exact (4.40.0); the chart cadence is very
 # fast (multiple bumps per week), so the pin must not float. See README.md.
 namespace: langfuse-data
 
 helmCharts:
 - name: seaweedfs
   repo: https://seaweedfs.github.io/seaweedfs/helm
-  version: "4.37"
+  version: "4.40.0"
   releaseName: langfuse-seaweedfs
   namespace: langfuse-data
   valuesFile: values.yaml

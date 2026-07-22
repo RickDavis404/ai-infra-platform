@@ -14,14 +14,14 @@ kind: Kustomization
 # `--load-restrictor LoadRestrictionsNone` (apply.sh / render-all.sh / diff.sh /
 # down.sh). generatorOptions mirrors the base for identical name handling.
 #
-# Chart pin MUST equal the base (loki 18.3.0); a Renovate bump to ../kustomization.yaml
+# Chart pin MUST equal the base (loki 18.5.1); a Renovate bump to ../kustomization.yaml
 # will NOT touch this copy — keep them in lock-step (planning §5 helm-version drift).
 namespace: lgtm
 
 helmCharts:
   - name: loki
     repo: https://grafana-community.github.io/helm-charts
-    version: 18.3.0
+    version: 18.5.1
     releaseName: loki
     namespace: lgtm
     valuesFile: ../values.yaml

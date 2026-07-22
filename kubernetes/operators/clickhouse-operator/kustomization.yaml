@@ -2,10 +2,11 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 # Altinity ClickHouse operator, inlined via Helm and rendered with
-# `kustomize build --enable-helm`. The pin is exact (0.27.1, ships ClickHouse
-# 25.8 LTS) and does not float. The operator reconciles the CHI / CHK custom
-# resources in `kubernetes/langfuse-data/clickhouse/`. See README.md for
-# provenance and the watch-all-namespaces override.
+# `kustomize build --enable-helm`. The pin is exact (0.27.1) and does not float; the
+# operator does not bundle a server — the CHI / CHK images it reconciles (in
+# `kubernetes/langfuse-data/clickhouse/`) are pinned operator-independently at
+# 26.3.17.56 (26.3 LTS). See README.md for provenance and the watch-all-namespaces
+# override.
 #
 # `includeCRDs: true` renders all four ClickHouse CRDs into this overlay so they
 # are applied server-side directly. The chart's CRD install/upgrade hook Job is

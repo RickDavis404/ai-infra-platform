@@ -13,7 +13,7 @@ ClusterIP/service load-balancing that kube-proxy would otherwise handle.
 |--------------|---------------------------|
 | Chart        | `cilium`                  |
 | Repo         | `https://helm.cilium.io`  |
-| Version      | **`1.20.0-pre.3`** (pinned, pre-release) |
+| Version      | **`1.20.0-rc.0`** (pinned, pre-release) |
 | Release name | `cilium`                  |
 | Namespace    | `kube-system`             |
 | Values       | `values.yaml`             |
@@ -21,6 +21,14 @@ ClusterIP/service load-balancing that kube-proxy would otherwise handle.
 
 The chart version is pinned exactly in `kustomization.yaml`; it does **not** float.
 Re-test the kube-proxy-replacement, LB-IPAM, and L2-announcement knobs on any bump.
+
+**Why a pre-release?** The cluster runs Kubernetes **1.36**, which is not in Cilium 1.19's
+supported-version matrix (1.19.x caps at k8s 1.35). Cilium **1.20** lists k8s 1.36 as
+supported, but has not shipped GA yet — so we pin the newest `1.20.0` pre-release (now
+`-rc.0`, superseding the earlier `-pre.*`), the only line whose matrix covers our Kubernetes version. **Plan:** switch to Cilium 1.20.0 **GA** once it
+ships (ETA end of July 2026). The cluster has run healthy on k8s 1.36.2 + Cilium 1.20-pre
+since 2026-07-01; if a pre-release ever misbehaves, roll back to 1.19.5 (accepting the k8s
+1.36 version skew) as a stopgap until GA.
 
 ## Render and apply
 

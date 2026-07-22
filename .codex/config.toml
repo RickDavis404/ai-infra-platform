@@ -4,6 +4,15 @@ approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 project_doc_fallback_filenames = ["CLAUDE.md"]
 
+# Max-capture: tool/function outputs are middle-truncated at ~10,000 BYTES by default
+# before history+model; raise to a 128k-token budget (tests exercise 100k). MUST stay a
+# TOP-LEVEL key (before the first table) so codex honors it, not a nested table key.
+tool_output_token_limit = 128000
+
+# history.persistence default is already save-all with NO max_bytes cap — keep defaults
+# (explicitly: do NOT set persistence="none" or max_bytes). ~/.codex/history.jsonl grows
+# unbounded; disk headroom is checked in the verification battery (§F).
+
 [mcp_servers.grafana]
 command = "uvx"
 args = ["mcp-grafana", "--disable-write"]
@@ -20,3 +29,16 @@ inherit = "core"
 
 [sandbox_workspace_write]
 network_access = true
+
+# --- Langfuse client-side tracing (codex-observability-plugin) ------------------
+# The Langfuse `tracing` plugin captures each codex turn CLIENT-SIDE (a `Stop` hook
+# reads the rollout transcript and uploads a SEPARATE Langfuse trace, correlated to
+# the gateway trace by codex session id). It is NOT configured here: the plugin
+# binary + marketplace snapshot are per-machine and `codex plugin add` auto-writes
+# the `[marketplaces.*]` source and `[plugins."tracing@codex-observability-plugin"]
+# enabled = true` into the USER config (~/.codex/config.toml) — so, like `[otel]`,
+# it is managed per machine by a mise task: `mise run codex:install-plugins`. The
+# tracing env (TRACE_TO_LANGFUSE + LANGFUSE_*) flows via mise (conf.d/10-env.toml +
+# secret-env.sh). The `hooks`/`plugins` codex features are stable-on by default on
+# the pinned codex 0.144.1 (the legacy `[features] plugin_hooks` flag is removed), so
+# no feature flag is set. One-time hook-trust approval is required per machine.

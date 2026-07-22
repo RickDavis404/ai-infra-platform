@@ -1,6 +1,6 @@
 # PROFILE: HA base (rendered by 'mise run up:ha'); the default 'mise run up' renders the lean overlay in ./lean/ instead. See docs/profiles.md.
 # Grafana Alloy — meta-observability logs + cluster metrics agent. Chart
-# grafana/alloy 1.10.0 (image tag v1.17.1), namespace lgtm. Rendered via `kustomize build --enable-helm`.
+# grafana/alloy 1.10.1 (image tag v1.18.0), namespace lgtm. Rendered via `kustomize build --enable-helm`.
 # Runs as a SINGLE-replica Deployment (no clustering) — both jobs are API-based,
 # not node-local, so one pod covers the whole cluster (see controller: below).
 #
@@ -21,11 +21,11 @@
 # the metrics components need. We pin an EXPLICIT `rbac.rules` set below so a future
 # chart bump that narrows the defaults cannot silently break SM/PM discovery.
 
-# Alloy image pin. Chart 1.10.0 stays as the pinned chart; only the image tag is
-# overridden to v1.17.1 (registry docker.io + repository grafana/alloy remain the
+# Alloy image pin. Chart 1.10.1 stays as the pinned chart; only the image tag is
+# overridden to v1.18.0 (registry docker.io + repository grafana/alloy remain the
 # correct chart defaults, so no other image key is needed).
 image:
-  tag: v1.17.1
+  tag: v1.18.0
 
 controller:
   # Single-replica Deployment. Both Alloy jobs here are API-based, NOT node-local:

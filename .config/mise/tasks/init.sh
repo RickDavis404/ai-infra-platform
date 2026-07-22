@@ -250,6 +250,8 @@ else
   warn "socket_vmnet secure binary is MISSING at ${SOCKET_VMNET_BIN}."
   warn "Homebrew installs socket_vmnet under /opt/homebrew, but Lima requires it at a"
   warn "root-owned path. Copy it there with YOUR sudo in another shell:"
+  # Instructional text: the $(brew --prefix …) must print literally for the operator to run.
+  # shellcheck disable=SC2016
   printf '\n    sudo mkdir -p /opt/socket_vmnet/bin\n    sudo cp "$(brew --prefix socket_vmnet)/bin/socket_vmnet" /opt/socket_vmnet/bin/socket_vmnet\n    sudo chown -R root:wheel /opt/socket_vmnet\n    sudo chmod 755 /opt/socket_vmnet/bin/socket_vmnet\n\n' >&2
   warn "init does NOT run sudo for you. Run the commands above, then re-run 'mise run init' (or 'mise run up')."
 fi
@@ -528,25 +530,38 @@ if [[ -f "${REPO_ROOT}/secrets/shared.env" ]]; then
 fi
 warn "Write-once values LANGFUSE_SALT and LANGFUSE_ENCRYPTION_KEY must NEVER be rotated after first boot."
 
-# --- Codex OAuth token into the repo-local $CODEX_HOME -------------------------
-# mise points CODEX_HOME at .config/codex/ so a bare `codex` reads the provider-wired
-# user config there and routes through the gateway. Codex also reads auth.json (the
-# ChatGPT/OpenAI subscription OAuth token) from $CODEX_HOME, so without a token there
-# bare codex reports "not logged in" even when ~/.codex is authed. Symlink the
-# repo-local path to ~/.codex/auth.json so the latter stays the single source of truth
-# (token refresh writes through the link). The link + its target are gitignored; only
-# the provider config and pinned catalog under .config/codex/ are committed.
-CODEX_HOME_DIR="${REPO_ROOT}/.config/codex"
-CODEX_AUTH_LINK="${CODEX_HOME_DIR}/auth.json"
-if [[ -e "${HOME}/.codex/auth.json" && ! -e "${CODEX_AUTH_LINK}" && ! -L "${CODEX_AUTH_LINK}" ]]; then
-  mkdir -p "${CODEX_HOME_DIR}"
-  if ln -s "${HOME}/.codex/auth.json" "${CODEX_AUTH_LINK}"; then
-    info "Linked ${CODEX_AUTH_LINK#"${REPO_ROOT}/"} -> ~/.codex/auth.json (Codex OAuth token; gitignored)."
-  else
-    warn "Could not link ~/.codex/auth.json into ${CODEX_HOME_DIR#"${REPO_ROOT}/"}; bare codex may report 'not logged in'."
-  fi
+# Claude Code raw API bodies target: OTEL_LOG_RAW_API_BODIES (conf.d/10-env.toml)
+# points here but claude does NOT create the directory, so it must pre-exist. Also
+# created by host/up.sh and the claude launch tasks — all idempotent.
+mkdir -p "${REPO_ROOT}/.local/logs/claude/otel-raw-bodies" # Claude Code OTEL_LOG_RAW_API_BODIES target (must pre-exist; claude does not create it)
+
+# --- Codex global config (~/.codex/config.toml) ---------------------------------
+# The repo no longer overrides CODEX_HOME. Instead, `codex:global-config` merges the
+# minimal project blocks ([projects] trust, [otel] exporters, [analytics] off, inert
+# litellm_local provider definition) into the REAL ~/.codex/config.toml, taking a
+# UTC-timestamped backup before it appends anything (and no backup at all on an
+# idempotent re-run that merges nothing).
+# NOTE: this prompt defaults to Y, and ask_yn AUTO-ACCEPTS the default in a
+# non-interactive shell — so any unattended/scripted `mise run init` (the headless
+# remote fresh-clone deploy relies on this) DOES merge into the operator's real
+# ~/.codex/config.toml. That is intentional and safe (idempotent merge + backup); to
+# avoid touching a personal ~/.codex, run init attended and answer 'n', or run
+# `codex:global-config` separately.
+if ask_yn "Merge the ai-infra [otel]/trust blocks into ~/.codex/config.toml now (timestamped backup)?" Y; then
+  run_task_or_script codex:global-config "${REPO_ROOT}/.config/mise/tasks/codex/global-config.sh"
 else
-  info "Codex auth.json link under .config/codex/ already present or ~/.codex/auth.json not yet created — skipping."
+  info "Skipped. Run 'mise run codex:global-config' before using bare codex telemetry."
+fi
+
+# --- Codex Langfuse plugin (client-side codex → Langfuse tracing) ----------------
+# Installs + enables the Langfuse codex-observability-plugin into ~/.codex (git clone
+# → needs network). Non-fatal: a plugin-install hiccup must not abort init. One-time
+# hook-trust approval is still required per machine (first interactive `codex` turn).
+if ask_yn "Install the Langfuse codex plugin (client-side codex → Langfuse tracing) into ~/.codex now?" Y; then
+  run_task_or_script codex:install-plugins "${REPO_ROOT}/.config/mise/tasks/codex/install-plugins.sh" ||
+    warn "codex:install-plugins failed (non-fatal) — run 'mise run codex:install-plugins' later; see docs/developer-workflows.md §6.2."
+else
+  info "Skipped. Run 'mise run codex:install-plugins' to enable client-side codex → Langfuse tracing."
 fi
 
 # --- Step 8: next step --------------------------------------------------------

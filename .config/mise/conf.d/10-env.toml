@@ -6,7 +6,10 @@
 [env]
 KUBECONFIG    = "{{config_root}}/.local/kube/config" # repo-local kubeconfig (copyToHost target, under .local)
 LIMA_INSTANCE = "ai-inf-platform"                             # Lima instance base name (kubeadm pivot, D005)
-CODEX_HOME    = "{{config_root}}/.config/codex"      # repo-local Codex home: provider-wired user config so bare `codex` routes through the gateway
+
+# Repo-launcher bin dir: a committed TTY-preserving `codex` wrapper shadows the mise-managed
+# binary so a bare `codex` in a repo shell gets the full gateway/-c provider overrides.
+_.path = ["{{config_root}}/.config/bin"]
 
 # Localhost-only port-forward defaults (UIs require creds; no anon access).
 LITELLM_PORT   = "34000"
@@ -50,7 +53,9 @@ AI_INFRA_REGISTRY_ADDR   = "192.168.105.50:5000"
 
 # Claude Code → LiteLLM gateway VIP (model traffic) + retry budget.
 ANTHROPIC_BASE_URL                         = "http://{{env.AI_INFRA_LITELLM_VIP}}:4000"
-CLAUDE_CODE_MAX_RETRIES                    = "100"
+# Retry watchdog (v2.1.199+): lifts the 15-retry hard cap (which silently clamped the old
+# MAX_RETRIES=100 since v2.1.186) and raises non-capacity transient-error retries to 300.
+CLAUDE_CODE_RETRY_WATCHDOG                 = "1"
 MAX_STRUCTURED_OUTPUT_RETRIES              = "50"
 
 # OpenTelemetry: Claude Code → OTel Collector VIP (OTLP/HTTP protobuf).
@@ -67,13 +72,42 @@ OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platfor
 OTEL_LOG_USER_PROMPTS                 = "1"
 OTEL_LOG_TOOL_DETAILS                 = "1"
 OTEL_LOG_TOOL_CONTENT                 = "1"
+# --- Max-capture additions (verified against claude-code 2.1.206 docs) ---
+# Raw API bodies (untruncated, one file per request/response) — file mode writes to disk
+# and emits only a body_ref attr over OTLP; the host alloy filelog ships the files to Loki.
+# The dir MUST pre-exist (created by init.sh + host/up.sh + the claude launch tasks).
+OTEL_LOG_RAW_API_BODIES               = "file:{{config_root}}/.local/logs/claude/otel-raw-bodies"
+OTEL_LOG_ASSISTANT_RESPONSES          = "1"    # v2.1.193+; explicit (would inherit OTEL_LOG_USER_PROMPTS anyway)
+OTEL_METRICS_INCLUDE_VERSION          = "true"
+OTEL_METRICS_INCLUDE_ENTRYPOINT       = "true"
+# REQUIRED with a custom ANTHROPIC_BASE_URL: forces W3C traceparent propagation to the
+# LiteLLM gateway (default suppresses it for non-Anthropic base URLs) -> CLI<->gateway span join.
+CLAUDE_CODE_PROPAGATE_TRACEPARENT     = "1"
+# OTLP export timeouts x5 (spec default 10000ms). Standard OTel-SDK vars; Claude Code does
+# not document honoring them (harmless if ignored — probed in the verification battery).
+# SHARED with codex's Rust OTel exporters (verified honored there), so one setting covers both agents.
+OTEL_EXPORTER_OTLP_TIMEOUT            = "50000"
+OTEL_EXPORTER_OTLP_METRICS_TIMEOUT    = "50000"
+OTEL_EXPORTER_OTLP_LOGS_TIMEOUT       = "50000"
+OTEL_EXPORTER_OTLP_TRACES_TIMEOUT     = "50000"
 
 # Langfuse tracing + MCP (base URL/host at the langfuse-web VIP; read-only MCP).
-TRACE_TO_LANGFUSE     = "true"
 LANGFUSE_BASE_URL     = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
 CC_LANGFUSE_MAX_CHARS = "67108864"
 LANGFUSE_HOST         = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
 LANGFUSE_MCP_READ_ONLY = "true"
+
+# Langfuse codex-observability-plugin — CLIENT-SIDE codex capture (a codex `Stop` hook
+# reads each turn's rollout and uploads it to Langfuse as a SEPARATE trace, correlated
+# to the gateway trace by codex session id). Install per-machine with
+# `mise run codex:install-plugins`; these env knobs are read by the plugin's hook:
+#   - LANGFUSE_BASE_URL (above) + LANGFUSE_PUBLIC_KEY/SECRET_KEY (secret-env.sh) auth the upload
+#   - TRACE_TO_LANGFUSE opts the plugin in (default off)
+#   - LANGFUSE_CODEX_MAX_CHARS caps per-field capture, raised to the 64 MiB max-capture
+#     posture (plugin default is 20000), matching CC_LANGFUSE_MAX_CHARS for Claude.
+# Inert unless the plugin is installed AND its Stop hook is trusted (one-time per machine).
+TRACE_TO_LANGFUSE        = "true"
+LANGFUSE_CODEX_MAX_CHARS = "67108864"
 
 # Grafana MCP (URL at the grafana VIP; admin USERNAME non-secret, password via fnox).
 GRAFANA_URL      = "http://{{env.AI_INFRA_GRAFANA_VIP}}:3000"

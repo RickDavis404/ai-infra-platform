@@ -7,10 +7,11 @@
 # peer transport on port 30021. Peer-to-peer mirroring does NOT depend on that path:
 #   - In the chart's default mode (service.registry.usePreferSameNodeTrafficDistribution
 #     = false, kept in values.yaml), each Spegel pod also exposes the registry on a
-#     HOST PORT (30020) and the FIRST containerd mirror-target is
-#     http://$(NODE_IP):30020 — so a peer on node A fetches layers directly from
-#     node B's host port (hostPort is explicitly allowed by validate:no-nodeport's
-#     scope note; the Cilium agent DaemonSet uses hostPort too).
+#     HOST PORT (29020 — see values.yaml: pinned below Cilium's 30000-32767 NodePort
+#     range because kube-proxy-replacement silently drops the 30020 chart default) and
+#     the FIRST containerd mirror-target is http://$(NODE_IP):29020 — so a peer on node A
+#     fetches layers directly from node B's host port (hostPort is explicitly allowed by
+#     validate:no-nodeport's scope note; the Cilium agent DaemonSet uses hostPort too).
 #   - The secondary mirror-target http://$(NODE_IP):30021 still resolves: as a ClusterIP
 #     Service it load-balances to a peer pod in-cluster. Demoting to ClusterIP only
 #     removes the externally-reachable NodePort surface, not the peer path.
