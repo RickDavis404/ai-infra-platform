@@ -68,28 +68,101 @@ OTEL_EXPORTER_OTLP_PROTOCOL           = "http/protobuf"
 OTEL_EXPORTER_OTLP_METRICS_ENDPOINT   = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/metrics"
 OTEL_EXPORTER_OTLP_LOGS_ENDPOINT      = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/logs"
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT    = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/traces"
-OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platform-local"
+# Resource attrs = deployment env + DYNAMIC git context (Lane D1), resolved once at shell-init by a
+# mise tera exec (which runs under `sh -o errexit`, so every step is failure-tolerant): repo =
+# origin-remote slug (`basename -s .git`) → git-toplevel dir basename → `unknown`; branch =
+# `git branch --show-current` → `detached`. printf keeps it single-line (no trailing newline) and it
+# NEVER errors outside a git repo. Feeds every metric/log/trace (both CLIs honor this one var).
+OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platform-local,{{ exec(command='r=$(git config --get remote.origin.url 2>/dev/null || true); [ -n \"$r\" ] && r=$(basename -s .git \"$r\" 2>/dev/null || true) || true; [ -n \"$r\" ] || r=$(basename \"$(git rev-parse --show-toplevel 2>/dev/null || true)\" 2>/dev/null || true); [ -n \"$r\" ] || r=unknown; b=$(git branch --show-current 2>/dev/null || true); [ -n \"$b\" ] || b=detached; printf \"%s\" \"vcs.repository.name=$r,vcs.branch.name=$b\"') }}"
+# Prompt/response/tool content capture (Claude-only OTEL_LOG_* toggles).
 OTEL_LOG_USER_PROMPTS                 = "1"
 OTEL_LOG_TOOL_DETAILS                 = "1"
 OTEL_LOG_TOOL_CONTENT                 = "1"
-# --- Max-capture additions (verified against claude-code 2.1.206 docs) ---
+OTEL_LOG_ASSISTANT_RESPONSES          = "1"    # v2.1.193+; explicit (would inherit OTEL_LOG_USER_PROMPTS anyway)
+# --- Max-capture additions (verified against claude-code 2.1.216 docs) ---
 # Raw API bodies (untruncated, one file per request/response) — file mode writes to disk
 # and emits only a body_ref attr over OTLP; the host alloy filelog ships the files to Loki.
 # The dir MUST pre-exist (created by init.sh + host/up.sh + the claude launch tasks).
 OTEL_LOG_RAW_API_BODIES               = "file:{{config_root}}/.local/logs/claude/otel-raw-bodies"
-OTEL_LOG_ASSISTANT_RESPONSES          = "1"    # v2.1.193+; explicit (would inherit OTEL_LOG_USER_PROMPTS anyway)
+
+# Content ceiling (max-override): raise Claude's per-body OTLP content cap from the 60 KB
+# default to 64 MiB — matches the pipeline (Loki max_line_size 64 MB) and CC_LANGFUSE_MAX_CHARS.
+CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH   = "67108864"
+
+# Diagnostics + shutdown/flush (max-override): print exporter errors to stderr, and give the
+# batch processors up to 600s to drain on exit/flush so nothing is lost at shutdown.
+CLAUDE_CODE_OTEL_DIAG_STDERR          = "1"
+CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS  = "600000"
+CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS     = "600000"
+
+# Session + subagent capture (max-override): persist session state, forward subagent text into the
+# parent trace, tolerate hour-long async-agent stalls, and lift the Task-tool output cap.
+CLAUDE_CODE_FORCE_SESSION_PERSISTENCE = "1"
+CLAUDE_CODE_FORWARD_SUBAGENT_TEXT     = "1"
+CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS   = "3600000"
+TASK_MAX_OUTPUT_LENGTH                = "160000"
+
+# Export cadence (explicit-default): pin the SDK defaults so a future SDK change can't drift them.
+OTEL_METRIC_EXPORT_INTERVAL           = "60000"
+OTEL_LOGS_EXPORT_INTERVAL             = "5000"
+OTEL_TRACES_EXPORT_INTERVAL           = "5000"
+OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = "delta"
+
+# Anti-drop batch queues (shared claude+codex via the OTel SDK): raise the max queue from the
+# 2048 default (silently drops events under burst) to 16384; export batch size <= queue size.
+OTEL_BLRP_MAX_QUEUE_SIZE              = "16384"   # logs  (BatchLogRecordProcessor)
+OTEL_BLRP_MAX_EXPORT_BATCH_SIZE       = "2048"
+OTEL_BSP_MAX_QUEUE_SIZE               = "16384"   # spans (BatchSpanProcessor)
+OTEL_BSP_MAX_EXPORT_BATCH_SIZE        = "2048"
+
+# Attribute count-limit margin (Claude honors these; codex is fixed at 128): raise from the
+# 128 default to 512 so attribute-rich spans/logs aren't clipped.
+OTEL_ATTRIBUTE_COUNT_LIMIT            = "512"
+OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT       = "512"
+OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT  = "512"
+
+# Metrics cardinality controls (Claude-only) — one aligned block.
+# REF: https://code.claude.com/docs/en/monitoring-usage#metrics-cardinality-control
+# explicit-default (default true — pinned so they can't drift):
+OTEL_METRICS_INCLUDE_SESSION_ID       = "true"
+OTEL_METRICS_INCLUDE_ACCOUNT_UUID     = "true"
+OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES = "true"
+# max-override (default false → true — attach version + entrypoint to every metric):
 OTEL_METRICS_INCLUDE_VERSION          = "true"
 OTEL_METRICS_INCLUDE_ENTRYPOINT       = "true"
+
 # REQUIRED with a custom ANTHROPIC_BASE_URL: forces W3C traceparent propagation to the
 # LiteLLM gateway (default suppresses it for non-Anthropic base URLs) -> CLI<->gateway span join.
 CLAUDE_CODE_PROPAGATE_TRACEPARENT     = "1"
-# OTLP export timeouts x5 (spec default 10000ms). Standard OTel-SDK vars; Claude Code does
-# not document honoring them (harmless if ignored — probed in the verification battery).
-# SHARED with codex's Rust OTel exporters (verified honored there), so one setting covers both agents.
+
+# Claude scratch dir (Lane F): project-local temp (dir created by init.sh + host/up.sh; .local/ gitignored).
+CLAUDE_CODE_TMPDIR                    = "{{config_root}}/.local/tmp-claude"
+
+# OTLP export timeouts, 5x the 10000ms spec default. CODEX-SCOPE NOTE: of everything in this OTel
+# block, codex's Rust exporter honors ONLY these 4 *_TIMEOUT vars + OTEL_RESOURCE_ATTRIBUTES +
+# OTEL_METRIC_EXPORT_INTERVAL + the OTEL_BSP_*/OTEL_BLRP_* batch knobs (shared SDK). EVERY other
+# OTEL_*/CLAUDE_CODE_* var here is Claude-only; codex gets its equivalents from ~/.codex/config.toml
+# [otel] (written by `mise run codex:global-config`).
 OTEL_EXPORTER_OTLP_TIMEOUT            = "50000"
 OTEL_EXPORTER_OTLP_METRICS_TIMEOUT    = "50000"
 OTEL_EXPORTER_OTLP_LOGS_TIMEOUT       = "50000"
 OTEL_EXPORTER_OTLP_TRACES_TIMEOUT     = "50000"
+
+# A8 (GATED — Lane G): tool-search deferral. Leave UNSET for now; unset already loads all tools
+# upfront under a gateway. Uncomment ONLY after the remote LiteLLM tool_reference passthrough test
+# (Lane G) passes — otherwise `auto`/`true` make requests fail on tool_reference rejection.
+# ENABLE_TOOL_SEARCH = "auto"
+
+# ── DELIBERATELY UNSET (documented — max-capture posture) ─────────────────────────────────────
+# These are intentionally NOT set; setting any of them would REDUCE capture:
+#   OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT / OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT /
+#     OTEL_LOGRECORD_ATTRIBUTE_VALUE_LENGTH_LIMIT — unset = unlimited = max; the real content cap
+#     is CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH (above). Any value here could only truncate.
+#   OTEL_TRACES_SAMPLER / OTEL_TRACES_SAMPLER_ARG — unset keeps the default
+#     parentbased_always_on = capture every trace (any sampler here could only drop traces).
+#   CLAUDE_CODE_ATTRIBUTION_HEADER — unset keeps attribution metadata on requests.
+#   DISABLE_* family (DISABLE_TELEMETRY, DISABLE_COST_WARNINGS, …) + OTEL_SDK_DISABLED — ANY
+#     non-empty value (INCLUDING "0" / "false") disables the feature, so they stay UNSET, never "0".
 
 # Langfuse tracing + MCP (base URL/host at the langfuse-web VIP; read-only MCP).
 LANGFUSE_BASE_URL     = "http://{{env.AI_INFRA_LANGFUSE_VIP}}:3000"
