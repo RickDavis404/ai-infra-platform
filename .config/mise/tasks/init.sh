@@ -535,6 +535,11 @@ warn "Write-once values LANGFUSE_SALT and LANGFUSE_ENCRYPTION_KEY must NEVER be 
 # created by host/up.sh and the claude launch tasks — all idempotent.
 mkdir -p "${REPO_ROOT}/.local/logs/claude/otel-raw-bodies" # Claude Code OTEL_LOG_RAW_API_BODIES target (must pre-exist; claude does not create it)
 
+# CLAUDE_CODE_TMPDIR / codex TMPDIR targets: repo-tree scratch dirs so agent temp
+# files land under the gitignored .local/ instead of the system tmpdir. Must
+# pre-exist (neither client creates it); also created by host/up.sh. Idempotent.
+mkdir -p "${REPO_ROOT}/.local/tmp-claude" "${REPO_ROOT}/.local/tmp-codex"
+
 # --- Codex global config (~/.codex/config.toml) ---------------------------------
 # The repo no longer overrides CODEX_HOME. Instead, `codex:global-config` merges the
 # minimal project blocks ([projects] trust, [otel] exporters, [analytics] off, inert
