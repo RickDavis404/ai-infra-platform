@@ -212,6 +212,87 @@ config:
       traces:
         span:
         - resource.attributes["service.name"] != "claude-code"
+    # Git-context -> Langfuse trace TAGS (OpenTelemetry VCS semantic conventions, RC).
+    # Copies whichever vcs.* attributes are present into `langfuse.trace.tags`, which
+    # Langfuse's OTLP ingester surfaces as trace-level TAGS. Two context blocks so the
+    # tags are built wherever the git-context enrichment lands them: resource-level
+    # vcs.* -> a resource `langfuse.trace.tags`, span-level vcs.* -> a span one
+    # (Langfuse reads the tag list from EITHER the resource or the span attribute).
+    # Each `append` is guarded by a presence check so it no-ops when the attribute is
+    # absent; error_mode: ignore also makes any runtime failure a pass-through, never a
+    # pipeline stall. `append` emits a native OTLP string array
+    # (["vcs.ref.head.name:<val>", ...]) which Langfuse serialises to a JSON array of
+    # strings. CONFIRM ON DEPLOY — the exact `langfuse.trace.tags` wire format accepted
+    # by the live Langfuse OTLP ingester (native OTLP array vs a JSON-ENCODED string);
+    # if a JSON string is required, build it with Concat/String instead of append.
+    # ref.head.type IS included below (parity with the x-litellm-tags header set);
+    # the remaining vcs.* fields (change.title, change.state, repository.url.full)
+    # extend by the same one-statement-per-field pattern.
+    transform/git_context_langfuse_tags:
+      error_mode: ignore
+      trace_statements:
+      # Resource-level git context (vcs.* carried on the resource).
+      - context: resource
+        statements:
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.repository.name", attributes["vcs.repository.name"]], ":"))
+          where attributes["vcs.repository.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.owner.name", attributes["vcs.owner.name"]], ":"))
+          where attributes["vcs.owner.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.provider.name", attributes["vcs.provider.name"]], ":"))
+          where attributes["vcs.provider.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.name", attributes["vcs.ref.head.name"]], ":"))
+          where attributes["vcs.ref.head.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.type", attributes["vcs.ref.head.type"]], ":"))
+          where attributes["vcs.ref.head.type"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.revision", attributes["vcs.ref.head.revision"]], ":"))
+          where attributes["vcs.ref.head.revision"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.change.id", String(attributes["vcs.change.id"])], ":"))
+          where attributes["vcs.change.id"] != nil
+      # Span-level git context (identical statements; here `attributes` = span attrs).
+      - context: span
+        statements:
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.repository.name", attributes["vcs.repository.name"]], ":"))
+          where attributes["vcs.repository.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.owner.name", attributes["vcs.owner.name"]], ":"))
+          where attributes["vcs.owner.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.provider.name", attributes["vcs.provider.name"]], ":"))
+          where attributes["vcs.provider.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.name", attributes["vcs.ref.head.name"]], ":"))
+          where attributes["vcs.ref.head.name"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.type", attributes["vcs.ref.head.type"]], ":"))
+          where attributes["vcs.ref.head.type"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.ref.head.revision", attributes["vcs.ref.head.revision"]], ":"))
+          where attributes["vcs.ref.head.revision"] != nil
+        - >-
+          append(attributes["langfuse.trace.tags"],
+          Concat(["vcs.change.id", String(attributes["vcs.change.id"])], ":"))
+          where attributes["vcs.change.id"] != nil
 
   exporters:
     otlphttp/tempo:
@@ -253,7 +334,10 @@ config:
     - health_check
     - file_storage
     pipelines:
-      # Every trace goes to Tempo in full.
+      # Every trace goes to Tempo in full. The Langfuse-specific
+      # transform/git_context_langfuse_tags stamp is NOT applied here — it belongs only on
+      # the traces/langfuse fan-out (Tempo already carries the raw vcs.* attrs, so stamping
+      # the Langfuse-only langfuse.trace.tags array on Tempo spans would just duplicate them).
       traces:
         receivers: [otlp]
         processors: [memory_limiter, transform/claude_code_genai, batch]
@@ -261,7 +345,7 @@ config:
       # Claude Code spans (and only those) are fanned to Langfuse.
       traces/langfuse:
         receivers: [otlp]
-        processors: [memory_limiter, transform/claude_code_genai, filter/langfuse_only_claude_code, batch]
+        processors: [memory_limiter, transform/claude_code_genai, filter/langfuse_only_claude_code, transform/git_context_langfuse_tags, batch]
         exporters: [otlphttp/langfuse]
       metrics:
         receivers: [otlp]
