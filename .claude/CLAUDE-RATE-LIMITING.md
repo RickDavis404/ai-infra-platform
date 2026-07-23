@@ -38,6 +38,7 @@ hook. Exponential backoff is built in — only the retry *count* is configurable
 | `OTEL_LOG_TOOL_CONTENT` (env) | **disabled** | `1` | Tool input+output bodies in spans — default **60 KB per-attribute** cap, raised to 64 MiB by `CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH` (below) |
 | `OTEL_LOG_ASSISTANT_RESPONSES` (env, v2.1.193+) | **disabled** | `1` | Assistant response text (would inherit `OTEL_LOG_USER_PROMPTS`; pinned explicit) |
 | `OTEL_LOG_RAW_API_BODIES` (env) | **disabled** | `file:{{config_root}}/.local/logs/claude/otel-raw-bodies` | Full Anthropic request/response JSON, untruncated, one file per call, into the gitignored `.local/` tree — only a `body_ref` attr rides OTLP; the host alloy filelog ships the files to Loki. **File mode keeps raw bodies out of the repo tree; thinking is `<REDACTED>` in these logs by design — the full summarized thinking is preserved unredacted in the on-disk transcripts instead (see [`observability-taxonomy.md`](../docs/observability-taxonomy.md) §7).** |
+| `CLAUDE_CODE_EXTRA_BODY` (env, ≥v2.1.206) | **unset** (headless/`-p` → `thinking.display="omitted"`, no summary text) | `{"thinking":{"type":"adaptive","display":"summarized"}}` | Forces the thinking-summary capture below to apply to headless/background sessions too, not just interactive ones — see the dedicated section below |
 | `CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH` (env) | **60 KB** | `67108864` (64 MiB) | The real content lever — raises the 60 KB per-body OTLP content cap (`OTEL_LOG_TOOL_CONTENT` / inline bodies) to match the pipeline (Loki 64 MB) and `CC_LANGFUSE_MAX_CHARS` |
 | `CC_LANGFUSE_MAX_CHARS` (env, langfuse plugin) | **20000** | `67108864` (64 MiB) | Per-field capture cap before the plugin truncates |
 
@@ -49,6 +50,49 @@ hook. Exponential backoff is built in — only the retry *count* is configurable
 > writes them to local disk — keep that directory outside the repo tree (here the
 > gitignored `.local/` tree). Secrets (`LANGFUSE_*_KEY`) live in the gitignored
 > `settings.local.json`, never here.
+
+### Extended-thinking capture (`CLAUDE_CODE_EXTRA_BODY`)
+
+Interactive sessions (`cc_entrypoint=cli`) default to `thinking.display="summarized"` and
+capture a summary out of the box. Headless/`-p` sessions (`cc_entrypoint=sdk-cli` — every
+workflow subagent) default to `display="omitted"` instead: the model still reasons, but
+returns no summary text (signature only), so nothing lands in transcripts, spend-logs, or
+Langfuse. `CLAUDE_CODE_EXTRA_BODY` is a JSON object merged into the top level of every API
+request body (applies to background/`claude agents`/`--bg` sessions too on Claude Code
+≥ v2.1.206); it overrides the `thinking` field, forcing capture in **all** session types.
+
+`conf.d/10-env.toml` sets it project-wide to the universal summarized config:
+
+```
+CLAUDE_CODE_EXTRA_BODY = '{"thinking":{"type":"adaptive","display":"summarized"}}'
+```
+
+which is correct for the default model (`claude-opus-4-8`) and captures a summary on
+every session, including headless workflow subagents. A verified per-model preset
+library lives at `.config/claude/thinking/*.json` (one file per verified-valid
+`(model, config)` pair), documented in `.config/claude/thinking/README.md`:
+
+| model | `type:"enabled"` (RAW, unsummarized CoT) | `adaptive`+`display:"summarized"` (summary) |
+|---|---|---|
+| `claude-opus-4-6`  | raw chain-of-thought captured | summary captured |
+| `claude-haiku-4-5` | raw chain-of-thought captured | summary captured |
+| `claude-opus-4-8` (default) | nothing (ignored) | summary captured |
+| `claude-sonnet-5`  | nothing (ignored) | summary captured |
+| `claude-fable-5`   | nothing (ignored) | summary captured |
+
+**Why:** models before the always-adaptive line — `claude-opus-4-6` and
+`claude-haiku-4-5` — honor the classic fixed extended-thinking config
+(`{"thinking":{"type":"enabled","budget_tokens":8000}}`) and return the **full,
+unsummarized** chain-of-thought. The always-adaptive models (`claude-opus-4-8`,
+`claude-sonnet-5`, `claude-fable-5`) ignore `type:"enabled"` entirely and only ever
+expose a summary via `display:"summarized"`, which is universal — it works on every
+model tested and errors on none. To capture raw CoT, export the matching
+`claude-opus-4-6.enabled.json` / `claude-haiku-4-5.enabled.json` preset before running a
+session with that model; `budget_tokens` (8000) is the fixed thinking budget for
+`enabled` — raise it toward the model's max-output-tokens ceiling for deeper raw
+reasoning. See [`observability-taxonomy.md`](../docs/observability-taxonomy.md) §7 for
+how this interacts with the raw-body logger's unconditional `<REDACTED>` thinking
+redaction.
 
 ## SDK export, batch-queue, and attribute-limit tuning (`conf.d/10-env.toml` `[env]`)
 

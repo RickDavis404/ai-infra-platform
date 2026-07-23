@@ -345,7 +345,8 @@ routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth heade
   model answers; `http://127.0.0.1:34000` via `port-forward:litellm` is the fallback). There
   is **no `ANTHROPIC_API_KEY`** — proxy auth uses the virtual key in the
   `x-litellm-api-key` header (composed in `ANTHROPIC_CUSTOM_HEADERS`, which also carries an
-  `x-litellm-spend-logs-metadata` tag header that LiteLLM promotes to spend tags), and the
+  `x-litellm-spend-logs-metadata` tag header **and an `x-litellm-tags` companion** — the
+  former promoted by LiteLLM to spend tags, the latter to spend + Langfuse trace tags), and the
   client's subscription OAuth rides in `Authorization`, forwarded unchanged and never logged.
 - Telemetry on: `CLAUDE_CODE_ENABLE_TELEMETRY=1`,
   `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`; all three exporters are `otlp` over
@@ -354,11 +355,13 @@ routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth heade
 - `OTEL_RESOURCE_ATTRIBUTES` — the canonical environment identity
   `deployment.environment=ai-infra-platform-local` (supersedes the source's bare
   `local-dev`), with **dynamic git context appended at shell-init** by a mise
-  `{{exec()}}`: `vcs.repository.name=<repo>,vcs.branch.name=<branch>` (origin-remote
+  `{{exec()}}`: `vcs.repository.name=<repo>,vcs.ref.head.name=<branch>` (origin-remote
   slug → git-toplevel-dir basename fallback → `unknown`; branch via
-  `git branch --show-current` → `detached`), so every metric/log/trace carries the
-  repo + branch it was produced on. Both CLIs honor this one var; detail in
-  [`observability-taxonomy.md`](observability-taxonomy.md) §1.
+  `git branch --show-current` → `detached`), plus the appended OTel VCS semconv optionals
+  `vcs.repository.url.full` / `vcs.owner.name` / `vcs.provider.name` / `vcs.ref.head.type` /
+  `vcs.ref.head.revision` (empty optionals omitted), so every metric/log/trace carries the
+  repo + branch (and owner/remote/revision) it was produced on. Both CLIs honor this one var;
+  detail in [`observability-taxonomy.md`](observability-taxonomy.md) §1.
 - Full-capture flags (privacy default-off, enabled here): `OTEL_LOG_USER_PROMPTS=1`,
   `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, `OTEL_LOG_ASSISTANT_RESPONSES=1`,
   and `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` (forces W3C traceparent into the gateway for

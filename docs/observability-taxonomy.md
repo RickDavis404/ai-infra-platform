@@ -25,7 +25,7 @@ metric-name prefix are retired.
 | `session.id` | UUID | `session_id` | `conversation_id` | `conversation.id` / `thread.id` | (n/a) |
 | `gen_ai.request.model` / `model` | model id | observation.model | metadata | attr | label |
 | `litellm.key_alias` / `litellm.team` | `claude-code` / `agents` | default_tags | — | attr | label |
-| `vcs.repository.name` / `vcs.branch.name` | `ai-infra-platform` / `feat/otel-max-capture-sweep` | metadata | metadata | resource | label |
+| `vcs.repository.name` / `vcs.ref.head.name` (+ enriched `vcs.*` set, §1.1) | `ai-infra-platform` / `feat/upgrade-sweep-max-capture` | tags + metadata | metadata | resource | label |
 
 Standard values and rules:
 
@@ -59,35 +59,61 @@ Standard values and rules:
   is reconstructed by the **§8d** sitecustomize before any sink reads it, so it lands in
   spend-logs, s3_v2, and the classic Langfuse trace alike; see
   [`developer-workflows.md`](developer-workflows.md) §6.2.
-- **`vcs.repository.name` / `vcs.branch.name` — dynamic git context.** Appended to
-  `OTEL_RESOURCE_ATTRIBUTES` at shell-init by a mise `{{exec()}}` (origin-remote slug →
-  git-toplevel-dir basename → `unknown`; branch via `git branch --show-current` →
-  `detached`), so every metric/log/trace a CLI emits is tagged with the repo + branch
-  it ran on. The example value `ai-infra-platform` above is the **origin-remote slug**
-  (resolved first); the git-toplevel-dir basename (`ai-infra-platform-claude` on this
-  clone) is only the fallback. **`vcs.branch.name` is the single canonical branch key**
-  used across resource attrs **and** the §1.1 correlation records, so one selector matches
-  both. `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=true` carries them onto Claude
-  Code metrics as Prometheus labels. The same `repo`/`branch` pair is also stamped as
-  **LiteLLM spend tags** via the `x-litellm-spend-logs-metadata` header (composed in
-  `ANTHROPIC_CUSTOM_HEADERS` for Claude, the `.config/bin/codex` wrapper for Codex), so
-  gateway spend logs pivot by repository and branch too. Both CLIs honor the single
-  `OTEL_RESOURCE_ATTRIBUTES` var.
+- **`vcs.*` — dynamic git context (OpenTelemetry VCS semantic conventions, RC).**
+  Appended to `OTEL_RESOURCE_ATTRIBUTES` at shell-init by a mise `{{exec()}}`:
+  `vcs.repository.name` (origin-remote slug → git-toplevel-dir basename → `unknown`),
+  `vcs.repository.url.full` (the origin remote URL, omitted with no remote),
+  `vcs.owner.name` (parsed from the remote, omitted if unresolvable),
+  `vcs.provider.name=github`, `vcs.ref.head.name` (`git branch --show-current` →
+  `detached`), `vcs.ref.head.type=branch`, and `vcs.ref.head.revision` (`git rev-parse
+  HEAD`, omitted with no commit) — so every metric/log/trace a CLI emits is tagged with
+  the repo, branch, owner, and commit it ran on. Empty-valued optional fields are
+  dropped, never emitted as `key=`. The example values above are the **origin-remote
+  slug** (resolved first) and the current branch; the git-toplevel-dir basename
+  (`ai-infra-platform-claude` on this clone) is only the repository-name fallback.
+  Attribute names follow the OpenTelemetry VCS semantic conventions (RC):
+  **`vcs.ref.head.name`** is the single canonical branch key — it replaces the earlier
+  ad-hoc `vcs.branch.name` — and the §1.1 correlation triplet's PR attribute is now
+  **`vcs.change.id`** (was `vcs.pr.number`). Git context is new (no dashboards yet), so
+  the rename is a clean swap with nothing to migrate. `vcs.ref.head.name` is shared
+  across these resource attrs **and** the §1.1 correlation records, so one selector
+  matches both. `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=true` carries them onto Claude
+  Code metrics as Prometheus labels.
+- **Gateway-side tag promotion — `x-litellm-tags` alongside
+  `x-litellm-spend-logs-metadata`.** The same repo/branch pair is stamped as **LiteLLM
+  spend-log metadata** via the `x-litellm-spend-logs-metadata` header (a JSON blob:
+  `source`/`host`/`repo`/`branch`, composed in `ANTHROPIC_CUSTOM_HEADERS` for Claude, the
+  `.config/bin/codex` wrapper for Codex). A second header, **`x-litellm-tags`**, now
+  rides alongside it — a comma-separated `vcs.<key>:<value>` list (`vcs.repository.name`,
+  `vcs.owner.name`, `vcs.provider.name`, `vcs.ref.head.name`, `vcs.ref.head.type`,
+  `vcs.ref.head.revision`) built the same way by both CLIs. `x-litellm-tags` is a
+  **LiteLLM-native header**: the gateway auto-promotes it directly into both the
+  spend-log `tags` array and the classic-callback Langfuse trace's tags, with no
+  `extra_spend_tag_headers` metadata-blob indirection required — so gateway spend logs
+  **and** Langfuse traces now pivot by repository, owner, branch, and commit, not just
+  repo/branch. Both CLIs honor the single `OTEL_RESOURCE_ATTRIBUTES` var for the resource
+  attrs above.
 
 ### 1.1 Dynamic git-context correlation (branch / PR events)
 
 Beyond the static `vcs.*` resource attributes, a **`PostToolUse` `Bash` hook**
 (`.config/hooks/otel-git-context.*`, wired in Claude `settings.json` and the codex hook
 config) detects `git checkout -b` / `git switch -c` / `gh pr create`, parses the new
-branch and PR number, and emits a **correlation triplet — one span, one
-`agent.git.event` counter metric, and one log** — each carrying
-`{session.id, vcs.repository.name, vcs.branch.name, vcs.pr.number, event, agent}`
-(the branch rides under the **same canonical `vcs.branch.name` key** as the §1 resource
-attrs, so a single selector matches both signal families),
-posted to the OTel Collector at `http://$AI_INFRA_OTEL_VIP:4318` (the VIP is used
-because Claude strips inherited `OTEL_*` env from hooks). Because a hook cannot mutate
-an already-running span, the design **appends** correlation records rather than
-rewriting session spans:
+branch, PR number, and (for `gh pr create --title`) PR title, and emits a **correlation
+triplet — one span, one `agent.git.event` counter metric, and one log** — each carrying
+`session.id` plus the enriched OpenTelemetry VCS semantic-conventions (RC) set:
+`vcs.repository.name`, `vcs.repository.url.full`, `vcs.owner.name`, `vcs.provider.name`
+(`github`), `vcs.ref.head.name`, `vcs.ref.head.type` (`branch`), `vcs.ref.head.revision`,
+`vcs.change.id`, plus `event` and `agent` — with a `pr_created` record additionally
+carrying `vcs.change.title` and `vcs.change.state` (`open`; the hook only emits the
+creation event, so `state` is always `open`). `vcs.ref.head.name` rides under the
+**same canonical key** as the §1 resource attrs (replacing the earlier `vcs.branch.name`),
+and `vcs.change.id` replaces the earlier `vcs.pr.number`, so a single selector matches
+both signal families. Empty/unset fields are dropped from every record, never emitted
+with no value. Records post to the OTel Collector at `http://$AI_INFRA_OTEL_VIP:4318`
+(the VIP is used because Claude strips inherited `OTEL_*` env from hooks). Because a hook
+cannot mutate an already-running span, the design **appends** correlation records rather
+than rewriting session spans:
 
 - **Claude** — the hook inherits `TRACEPARENT` (`CLAUDE_CODE_PROPAGATE_TRACEPARENT=1`),
   so its span joins the live session trace as a **child**; tagged
@@ -98,6 +124,21 @@ rewriting session spans:
 
 Net: every branch cut and PR opened during a run is queryable — **appended, never
 overwriting** — and joined back to the session by `session.id`.
+
+**Auto-promoted Langfuse tags (native-CLI trace path).** A collector-side OTTL
+transform on the `traces/langfuse` pipeline (§2 — the same fan-out that already runs
+`transform/claude_code_genai` + `filter/langfuse_only_claude_code`) copies the
+resource-level `vcs.*` attributes onto `langfuse.trace.tags`, the attribute key
+Langfuse's OTLP ingest reads to auto-populate a trace's tag list. This is the
+**native-CLI-OTLP counterpart** to the gateway-side `x-litellm-tags` promotion in §1:
+the LiteLLM classic-callback trace gets its tags from `x-litellm-tags`, while the CLI's
+own OTLP span (fanned to Langfuse per §2) gets them from this OTTL copy. The repo/owner/
+branch/revision tags — `vcs.repository.name` / `vcs.owner.name` / `vcs.ref.head.name` /
+`vcs.ref.head.revision` — appear as filterable Langfuse tags on **both** trace shapes;
+`vcs.change.id` (and `vcs.change.title` / `vcs.change.state`) appear **only** on the
+native-CLI OTLP shape via this collector transform, because the `x-litellm-tags` header is
+composed once at CLI launch (before any PR exists) and so can never carry the PR number.
+No manual `langfuse_default_tags` entry is required for either.
 
 ## 2. Signal routing (per backend)
 
@@ -289,12 +330,26 @@ store passwords. Telemetry pipelines never copy these into spans, logs, or
 metrics.
 
 **Extended thinking capture.** Claude Code's raw-body logger writes model thinking as
-`<REDACTED>` — that redaction is unconditional and has no toggle. The full
-**summarized** thinking is nonetheless preserved **unredacted** in the on-disk session
-transcripts (`~/.claude/projects/**/*.jsonl`), which is where thinking is searchable;
-the raw-body logs redact it by design. The **raw, unsummarized** chain-of-thought is
-never exposed to any caller (not API-recoverable), so it cannot be captured anywhere —
-a provider-side limit, not a config gap.
+`<REDACTED>` — that redaction is unconditional and has no toggle, and it is not the
+primary thinking-capture path. Interactive sessions (`cc_entrypoint=cli`) default to
+`thinking.display="summarized"` and capture a summary out of the box, but headless/`-p`
+sessions (`cc_entrypoint=sdk-cli` — every workflow subagent) default to
+`display="omitted"`: the model still reasons, but returns no summary text, so nothing
+lands in transcripts, spend-logs, or Langfuse. `CLAUDE_CODE_EXTRA_BODY` (a JSON object
+merged into every API request body; covers background/`claude agents`/`--bg` sessions
+too on Claude Code ≥ v2.1.206) forces `display="summarized"` for **all** session types —
+set project-wide in `conf.d/10-env.toml` — so headless and background sessions now
+capture thinking summaries the same as interactive ones. The full summarized thinking
+lands **unredacted** in the on-disk session transcripts (`~/.claude/projects/**/*.jsonl`),
+which is where thinking is searchable; the raw-body logs still redact it by design.
+**Raw, unsummarized** chain-of-thought is provider-gated to the pre-adaptive-thinking
+model line: `claude-opus-4-6` and `claude-haiku-4-5` honor the classic fixed
+`type:"enabled"` config and return the full raw CoT; the always-adaptive models (the
+default `claude-opus-4-8`, `claude-sonnet-5`, `claude-fable-5`) ignore `type:"enabled"`
+and only ever expose a summary. A verified per-model preset library lives at
+`.config/claude/thinking/` (one JSON file per valid `(model, config)` pair); see
+[`.claude/CLAUDE-RATE-LIMITING.md`](../.claude/CLAUDE-RATE-LIMITING.md) for the full
+matrix and wiring.
 
 **Privacy caveat (local-lab-only).** Because full capture records whatever the
 user typed or pasted, and raw-body capture writes bodies to disk, this posture is
