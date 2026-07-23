@@ -102,6 +102,15 @@ CLAUDE_CODE_FORWARD_SUBAGENT_TEXT     = "1"
 CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS   = "3600000"
 TASK_MAX_OUTPUT_LENGTH                = "160000"
 
+# Extended-thinking SUMMARY capture (max-capture). Headless/-p (cc_entrypoint=sdk-cli) defaults to
+# thinking.display="omitted" -> the model reasons but returns NO summary text (signature only), so
+# thinking is absent from transcripts + the LiteLLM->Langfuse gateway trace. Forcing display="summarized"
+# via EXTRA_BODY (merged into every request body; also covers background/subagent sessions on >=2.1.206)
+# captures the summary everywhere, for ALL session types. Universal across models (verified opus-4.6/4.8,
+# sonnet-5, fable-5, haiku-4.5 — none error). For RAW unsummarized chain-of-thought, opus-4.6 + haiku-4.5
+# accept type:"enabled" — see the verified per-model preset library in .config/claude/thinking/*.json.
+CLAUDE_CODE_EXTRA_BODY                 = '{"thinking":{"type":"adaptive","display":"summarized"}}'
+
 # Export cadence (explicit-default): pin the SDK defaults so a future SDK change can't drift them.
 OTEL_METRIC_EXPORT_INTERVAL           = "60000"
 OTEL_LOGS_EXPORT_INTERVAL             = "5000"
