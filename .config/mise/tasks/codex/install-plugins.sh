@@ -41,9 +41,16 @@ source "${REPO_ROOT}/.config/mise/lib/common.sh"
 install_err_trap
 require_cmd mise jq
 
-# The published marketplace source (owner/repo), the marketplace name codex derives
-# from it, and the fully-qualified plugin id. Verified live against codex 0.144.1.
-MARKETPLACE_SOURCE="langfuse/codex-observability-plugin"
+# The marketplace source (owner/repo), the marketplace name codex derives from it, and
+# the fully-qualified plugin id. Marketplace-name derivation verified live against codex
+# 0.144.1. Points at the USER FORK (RickDavis404/codex-observability-plugin) so it moves
+# in LOCK-STEP with the Claude side (.claude/settings.json extraKnownMarketplaces ->
+# RickDavis404/claude-observability-plugin): both CLIs' plugin sources are the user's
+# forks that carry the Lane-H 900s Stop-hook `timeout` (upstream ships 30s, which actively
+# truncates the codex Stop hook). DEPLOY SEQUENCING: the 900s hooks.json commit must be on
+# the fork's DEFAULT branch before this repoint is deployed — `plugin marketplace add`
+# owner/repo pulls the default branch (no in-source ref pin), so push the fork ahead of use.
+MARKETPLACE_SOURCE="RickDavis404/codex-observability-plugin"
 PLUGIN_ID="tracing@codex-observability-plugin"
 
 # Resolve the REAL mise-managed codex WITHOUT PATH — the committed .config/bin/codex
