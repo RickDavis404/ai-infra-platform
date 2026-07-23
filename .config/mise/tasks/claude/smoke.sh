@@ -38,15 +38,19 @@ otel_vip="${AI_INFRA_OTEL_VIP:-192.168.105.203}"
   fail "FAIL: OTLP traces endpoint not the OTel collector VIP /v1/traces"
 [[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == "deployment.environment=ai-infra-platform-local"* ]] ||
   fail "FAIL: deployment.environment not canonical (must lead OTEL_RESOURCE_ATTRIBUTES)"
-# Lane D1 appends DYNAMIC git context via a mise exec — both vcs.* keys must ride in the same var.
-[[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.repository.name="* && "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.branch.name="* ]] ||
-  fail "FAIL: OTEL_RESOURCE_ATTRIBUTES missing the D1 dynamic git context (vcs.repository.name=/vcs.branch.name=)"
+# Lane D1 appends DYNAMIC git context via a mise exec — the OTel VCS semconv keys must ride in the
+# same var: vcs.repository.name + vcs.ref.head.name (semconv, was vcs.branch.name), plus the D1
+# enrichment vcs.ref.head.revision (commit SHA) and vcs.repository.url.full (remote URL).
+[[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.repository.name="* && "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.ref.head.name="* &&
+  "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.ref.head.revision="* && "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.repository.url.full="* ]] ||
+  fail "FAIL: OTEL_RESOURCE_ATTRIBUTES missing the D1 dynamic git context (vcs.repository.name=/vcs.ref.head.name=/vcs.ref.head.revision=/vcs.repository.url.full=)"
 
 # --- 1b. Max-capture regression gate: every capture/OTLP knob pinned by 10-env.toml ------
 # Each var MUST equal its committed max-capture value (fail names the drifted one). Held as
 # "NAME=value" pairs split on the first '=', checked via indirect expansion like block 3.
 for pair in \
   "CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH=67108864" \
+  "CLAUDE_CODE_EXTRA_BODY={\"thinking\":{\"type\":\"adaptive\",\"display\":\"summarized\"}}" \
   "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta" \
   "CLAUDE_CODE_OTEL_DIAG_STDERR=1" \
   "CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS=600000" \

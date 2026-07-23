@@ -69,11 +69,18 @@ OTEL_EXPORTER_OTLP_METRICS_ENDPOINT   = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v
 OTEL_EXPORTER_OTLP_LOGS_ENDPOINT      = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/logs"
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT    = "http://{{env.AI_INFRA_OTEL_VIP}}:4318/v1/traces"
 # Resource attrs = deployment env + DYNAMIC git context (Lane D1), resolved once at shell-init by a
-# mise tera exec (which runs under `sh -o errexit`, so every step is failure-tolerant): repo =
-# origin-remote slug (`basename -s .git`) → git-toplevel dir basename → `unknown`; branch =
-# `git branch --show-current` → `detached`. printf keeps it single-line (no trailing newline) and it
-# NEVER errors outside a git repo. Feeds every metric/log/trace (both CLIs honor this one var).
-OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platform-local,{{ exec(command='r=$(git config --get remote.origin.url 2>/dev/null || true); [ -n \"$r\" ] && r=$(basename -s .git \"$r\" 2>/dev/null || true) || true; [ -n \"$r\" ] || r=$(basename \"$(git rev-parse --show-toplevel 2>/dev/null || true)\" 2>/dev/null || true); [ -n \"$r\" ] || r=unknown; b=$(git branch --show-current 2>/dev/null || true); [ -n \"$b\" ] || b=detached; printf \"%s\" \"vcs.repository.name=$r,vcs.branch.name=$b\"') }}"
+# mise tera exec (which runs under `sh -o errexit`, so every step is failure-tolerant). Emits the full
+# OpenTelemetry VCS semantic-convention set (keys aligned to the RC spec):
+#   vcs.repository.name    = origin-remote slug (`basename -s .git`) → git-toplevel dir basename → `unknown`
+#   vcs.repository.url.full = `git remote get-url origin` (OMITTED when empty / no remote)
+#   vcs.owner.name         = owner path segment before the repo in the remote (OMITTED when empty)
+#   vcs.provider.name      = github (constant)
+#   vcs.ref.head.name      = `git branch --show-current` → `detached`   (renamed from vcs.branch.name)
+#   vcs.ref.head.type      = branch (constant)
+#   vcs.ref.head.revision  = `git rev-parse HEAD` (OMITTED when empty)  (new enrichment)
+# Empty-valued optional fields are dropped (never `key=` with no value). printf keeps it single-line (no
+# trailing newline) and it NEVER errors outside a git repo. Feeds every metric/log/trace (both CLIs honor this one var).
+OTEL_RESOURCE_ATTRIBUTES              = "deployment.environment=ai-infra-platform-local,{{ exec(command='u=$(git remote get-url origin 2>/dev/null || true); r=; [ -n \"$u\" ] && r=$(basename -s .git \"$u\" 2>/dev/null || true) || true; [ -n \"$r\" ] || r=$(basename \"$(git rev-parse --show-toplevel 2>/dev/null || true)\" 2>/dev/null || true); [ -n \"$r\" ] || r=unknown; o=; if [ -n \"$u\" ]; then p=${u%.git}; p=${p%/*}; o=${p##*[/:]}; fi; b=$(git branch --show-current 2>/dev/null || true); [ -n \"$b\" ] || b=detached; rev=$(git rev-parse HEAD 2>/dev/null || true); out=\"vcs.repository.name=$r\"; [ -n \"$u\" ] && out=\"$out,vcs.repository.url.full=$u\" || true; [ -n \"$o\" ] && out=\"$out,vcs.owner.name=$o\" || true; out=\"$out,vcs.provider.name=github,vcs.ref.head.name=$b,vcs.ref.head.type=branch\"; [ -n \"$rev\" ] && out=\"$out,vcs.ref.head.revision=$rev\" || true; printf \"%s\" \"$out\"') }}"
 # Prompt/response/tool content capture (Claude-only OTEL_LOG_* toggles).
 OTEL_LOG_USER_PROMPTS                 = "1"
 OTEL_LOG_TOOL_DETAILS                 = "1"

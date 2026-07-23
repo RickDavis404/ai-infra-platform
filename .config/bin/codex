@@ -66,6 +66,30 @@ codex_branch="$(git -C "${REPO_ROOT}" branch --show-current 2>/dev/null || true)
 codex_repo="$(printf '%s' "${codex_repo}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
 codex_branch="$(printf '%s' "${codex_branch}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
 
+# --- OTel VCS semantic-convention (RC) tags for the x-litellm-tags header (Lane D2) ---
+# LiteLLM promotes x-litellm-tags to spend-log tags AND Langfuse trace tags. This header is
+# added ALONGSIDE the spend-logs-metadata header below (which keeps its source/host/repo/
+# branch JSON). Reuse the slugged repo/branch above; additionally derive the owner (strip a
+# trailing .git and the final /repo segment, then take the segment after the last ':' or '/',
+# so both scp-style git@host:owner/repo.git and proto://host/owner/repo.git URLs yield the
+# owner) and the head commit SHA, each slug-normalized BYTE-IDENTICALLY. Empty values are
+# OMITTED; repo/branch always resolve via unknown/detached.
+# Keys: vcs.repository.name / vcs.owner.name / vcs.provider.name / vcs.ref.head.name /
+# vcs.ref.head.type / vcs.ref.head.revision (comma-separated key:value tag strings).
+codex_remote="$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null || true)"
+codex_owner=""
+if [[ -n "${codex_remote}" ]]; then
+  codex_owner_src="${codex_remote%.git}"; codex_owner_src="${codex_owner_src%/*}"
+  codex_owner="${codex_owner_src##*[:/]}"
+fi
+codex_owner="$(printf '%s' "${codex_owner}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
+codex_commit="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+codex_commit="$(printf '%s' "${codex_commit}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
+codex_tags="vcs.repository.name:${codex_repo}"
+[[ -n "${codex_owner}" ]] && codex_tags="${codex_tags},vcs.owner.name:${codex_owner}"
+codex_tags="${codex_tags},vcs.provider.name:github,vcs.ref.head.name:${codex_branch},vcs.ref.head.type:branch"
+[[ -n "${codex_commit}" ]] && codex_tags="${codex_tags},vcs.ref.head.revision:${codex_commit}"
+
 info "launching codex (repo wrapper) against the LiteLLM gateway VIP (${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000)"
 
 # `codex -c key=value` parses value as TOML (string values inner-quoted; inline tables
@@ -89,7 +113,7 @@ exec "${real_codex}" \
   --config 'model_providers.litellm_local.wire_api="responses"' \
   --config 'model_providers.litellm_local.supports_websockets=false' \
   --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
-  --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\",\\\"repo\\\":\\\"${codex_repo}\\\",\\\"branch\\\":\\\"${codex_branch}\\\"}\" }" \
+  --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\",\\\"repo\\\":\\\"${codex_repo}\\\",\\\"branch\\\":\\\"${codex_branch}\\\"}\", \"x-litellm-tags\" = \"${codex_tags}\" }" \
   --config 'mcp_servers.grafana.command="uvx"' \
   --config 'mcp_servers.grafana.args=["mcp-grafana", "--disable-write"]' \
   --config "mcp_servers.grafana.env.GRAFANA_URL=\"http://${AI_INFRA_GRAFANA_VIP:-192.168.105.202}:3000\"" \

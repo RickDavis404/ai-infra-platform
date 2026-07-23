@@ -49,6 +49,8 @@ GIT_TIMEOUT = 2          # seconds per git subprocess
 BRANCH_CREATE_RE = re.compile(r"git\s+(?:checkout\s+-b|switch\s+-c)\s+(\S+)")
 PR_CREATE_RE = re.compile(r"\bgh\s+pr\s+create\b")
 PR_URL_RE = re.compile(r"/pull/(\d+)")
+# `gh pr create --title <value>` — quoted or bare; used to enrich vcs.change.title.
+PR_TITLE_RE = re.compile(r"""--title(?:\s+|=)(?:'([^']*)'|"([^"]*)"|(\S+))""")
 
 
 def _repo_root():
@@ -144,6 +146,27 @@ def _head_branch(cwd):
     return b if b and b != "HEAD" else None
 
 
+def _head_revision(cwd):
+    """Full HEAD commit SHA (vcs.ref.head.revision)."""
+    return _git(["rev-parse", "HEAD"], cwd) or None
+
+
+def _remote_url(cwd):
+    """origin remote URL (vcs.repository.url.full), verbatim."""
+    return _git(["config", "--get", "remote.origin.url"], cwd) or None
+
+
+def _owner_from_url(url):
+    """Owner/org slug from an https or scp-like git remote URL (vcs.owner.name)."""
+    if not url:
+        return None
+    u = url.rstrip("/")
+    if u.endswith(".git"):
+        u = u[:-4]
+    m = re.search(r"[:/]([^/:]+)/[^/]+$", u)  # .../<owner>/<repo>  or  host:<owner>/<repo>
+    return m.group(1) if m else None
+
+
 def _attr(k, v):
     if isinstance(v, bool):
         return {"key": k, "value": {"boolValue": v}}
@@ -213,6 +236,7 @@ def main():
     session_id = data.get("session_id") or data.get("sessionId") or ""
 
     pr_number = None
+    pr_title = None
     if event == "pr_created":
         parts = []
         _collect_text(data.get("tool_response"), parts)
@@ -222,6 +246,9 @@ def main():
                 pr_number = int(mm.group(1))
             except Exception:
                 pr_number = None
+        tm = PR_TITLE_RE.search(command)
+        if tm:
+            pr_title = next((g for g in tm.groups() if g), None)
 
     head = branch_from_cmd if event == "branch_created" else None
     if not head:
@@ -235,18 +262,27 @@ def main():
     else:
         agent, service_name = "codex", "codex"
 
+    url = _remote_url(cwd)
     common = {
         "session.id": session_id,
+        # OTel VCS semantic conventions (RC) canonical keys. Git context is new (no
+        # dashboards yet) so aligning to semconv is clean: `vcs.ref.head.name` replaces
+        # the earlier non-semconv `vcs.branch.name`, and `vcs.change.id` replaces
+        # `vcs.pr.number`; the rest enrich the record.
         "vcs.repository.name": _repo_name(cwd),
-        # Canonical branch key: SAME `vcs.branch.name` used by the session-start resource
-        # attrs (10-env.toml OTEL_RESOURCE_ATTRIBUTES exec, smoke.sh assertion, taxonomy §1),
-        # so ONE LogQL/TraceQL/PromQL selector matches both the session telemetry and these
-        # correlation records. (Was `vcs.ref.head.name`; standardized per review finding.)
-        "vcs.branch.name": head,
-        "vcs.pr.number": pr_number,
+        "vcs.repository.url.full": url,
+        "vcs.owner.name": _owner_from_url(url),
+        "vcs.provider.name": "github",
+        "vcs.ref.head.name": head,
+        "vcs.ref.head.type": "branch",
+        "vcs.ref.head.revision": _head_revision(cwd),
+        "vcs.change.id": pr_number,
         "event": event,
         "agent": agent,
     }
+    if event == "pr_created":
+        common["vcs.change.state"] = "open"
+        common["vcs.change.title"] = pr_title  # None/'' dropped by _attrs
     resource_attrs = [_attr("service.name", service_name)] + _attrs(common)
     dp_attrs = _attrs(common)
 
