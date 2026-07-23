@@ -36,8 +36,47 @@ otel_vip="${AI_INFRA_OTEL_VIP:-192.168.105.203}"
   fail "FAIL: full-capture flags not all enabled"
 [[ "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" == *"${otel_vip}:4318/v1/traces" ]] ||
   fail "FAIL: OTLP traces endpoint not the OTel collector VIP /v1/traces"
-[[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == "deployment.environment=ai-infra-platform-local" ]] ||
-  fail "FAIL: deployment.environment not canonical"
+[[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == "deployment.environment=ai-infra-platform-local"* ]] ||
+  fail "FAIL: deployment.environment not canonical (must lead OTEL_RESOURCE_ATTRIBUTES)"
+# Lane D1 appends DYNAMIC git context via a mise exec — both vcs.* keys must ride in the same var.
+[[ "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.repository.name="* && "${OTEL_RESOURCE_ATTRIBUTES:-}" == *"vcs.branch.name="* ]] ||
+  fail "FAIL: OTEL_RESOURCE_ATTRIBUTES missing the D1 dynamic git context (vcs.repository.name=/vcs.branch.name=)"
+
+# --- 1b. Max-capture regression gate: every capture/OTLP knob pinned by 10-env.toml ------
+# Each var MUST equal its committed max-capture value (fail names the drifted one). Held as
+# "NAME=value" pairs split on the first '=', checked via indirect expansion like block 3.
+for pair in \
+  "CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH=67108864" \
+  "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta" \
+  "CLAUDE_CODE_OTEL_DIAG_STDERR=1" \
+  "CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS=600000" \
+  "CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS=600000" \
+  "CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1" \
+  "CLAUDE_CODE_FORWARD_SUBAGENT_TEXT=1" \
+  "CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS=3600000" \
+  "TASK_MAX_OUTPUT_LENGTH=160000" \
+  "OTEL_METRIC_EXPORT_INTERVAL=60000" \
+  "OTEL_LOGS_EXPORT_INTERVAL=5000" \
+  "OTEL_TRACES_EXPORT_INTERVAL=5000" \
+  "OTEL_BLRP_MAX_QUEUE_SIZE=16384" \
+  "OTEL_BSP_MAX_QUEUE_SIZE=16384" \
+  "OTEL_BLRP_MAX_EXPORT_BATCH_SIZE=2048" \
+  "OTEL_BSP_MAX_EXPORT_BATCH_SIZE=2048" \
+  "OTEL_ATTRIBUTE_COUNT_LIMIT=512" \
+  "OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT=512" \
+  "OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT=512" \
+  "OTEL_METRICS_INCLUDE_SESSION_ID=true" \
+  "OTEL_METRICS_INCLUDE_ACCOUNT_UUID=true" \
+  "OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=true" \
+  "OTEL_METRICS_INCLUDE_VERSION=true" \
+  "OTEL_METRICS_INCLUDE_ENTRYPOINT=true"; do
+  k="${pair%%=*}"; v="${pair#*=}"
+  [[ "${!k:-}" == "${v}" ]] ||
+    fail "FAIL: ${k} is '${!k:-<unset>}', not the pinned max-capture value '${v}'"
+done
+# Claude scratch dir (Lane F): project-local temp under the gitignored .local/ tree.
+[[ "${CLAUDE_CODE_TMPDIR:-}" == */.local/tmp-claude ]] ||
+  fail "FAIL: CLAUDE_CODE_TMPDIR '${CLAUDE_CODE_TMPDIR:-<unset>}' does not end with /.local/tmp-claude"
 
 # --- 2. Proxy-hop auth header from fnox (secret-env.sh) — shape only, NEVER print value --
 # Warn (don't fail) when unresolved so publication/CI runs without an age identity stay green.
@@ -48,6 +87,12 @@ if [[ -n "${ANTHROPIC_CUSTOM_HEADERS:-}" ]]; then
   # <JSON>) that LiteLLM promotes to spend TAGS — assert it rode along with the resolved key.
   [[ "${ANTHROPIC_CUSTOM_HEADERS}" == *"x-litellm-spend-logs-metadata:"* ]] ||
     fail "FAIL: ANTHROPIC_CUSTOM_HEADERS missing the appended 'x-litellm-spend-logs-metadata:' tag header"
+  # That spend-tag JSON must carry the DYNAMIC git context (repo + branch) secret-env.sh injects
+  # for per-repo/-branch spend attribution — parse the value out of the header and assert both keys.
+  spend_json="${ANTHROPIC_CUSTOM_HEADERS##*x-litellm-spend-logs-metadata:}"
+  spend_json="${spend_json%%$'\n'*}"
+  jq -e 'has("repo") and has("branch")' <<<"${spend_json}" >/dev/null 2>&1 ||
+    fail "FAIL: x-litellm-spend-logs-metadata JSON missing 'repo'/'branch' keys (git spend attribution)"
 else
   warn "ANTHROPIC_CUSTOM_HEADERS unset — secret-env.sh could not resolve the virtual key (fnox/age unavailable?); skipping shape check"
 fi
