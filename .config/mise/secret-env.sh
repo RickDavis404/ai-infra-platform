@@ -56,10 +56,22 @@ _exp() {
   fi
 }
 
+# Dynamic git context for the spend-logs-metadata below (this JSON is promoted to LiteLLM
+# spend TAGS, so repo/branch become searchable — same key names the `.config/bin/codex`
+# wrapper uses). Both values are SANITIZED to a JSON-safe slug (any char outside
+# [A-Za-z0-9._/-] -> `_`, CR/LF stripped) so a crafted name can't break out of the inline
+# JSON, and every git call is guarded (2>/dev/null + fallbacks) so a missing git binary or
+# a non-repo dir degrades to unknown/detached silently — never an error or stderr noise.
+_slug() { printf '%s' "$1" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_'; }
+_repo_name=$(basename -s .git "$(git -C "$_repo" remote get-url origin 2>/dev/null)" 2>/dev/null)
+[ -n "$_repo_name" ] || _repo_name=$(basename "$(git -C "$_repo" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)
+_repo_tag=$(_slug "${_repo_name:-unknown}"); [ -n "$_repo_tag" ] || _repo_tag=unknown
+_branch_tag=$(_slug "$(git -C "$_repo" branch --show-current 2>/dev/null)"); [ -n "$_branch_tag" ] || _branch_tag=detached
+
 # Claude Code proxy-hop header: compose only when the virtual key resolves.
 _vk=$(_fx CLAUDE_CODE_LITELLM_VIRTUAL_KEY)
 _exp ANTHROPIC_CUSTOM_HEADERS "${_vk:+x-litellm-api-key: Bearer $_vk
-x-litellm-spend-logs-metadata: {\"source\":\"claude-code\",\"host\":\"$(hostname -s)\"}}"
+x-litellm-spend-logs-metadata: {\"source\":\"claude-code\",\"host\":\"$(hostname -s)\",\"repo\":\"$_repo_tag\",\"branch\":\"$_branch_tag\"}}"
 
 # Codex proxy-hop virtual key: export the raw key (still passed straight through)
 # AND a composed `Bearer <key>` header value. The committed `.config/bin/codex`
@@ -94,5 +106,5 @@ _exp LANGFUSE_PG_MCP_URI "${_lfpg:+postgresql://langfuse:$_lfpg@${AI_INFRA_LANGF
 _llpg=$(_fx LITELLM_PG_PASSWORD)
 _exp LITELLM_PG_MCP_URI "${_llpg:+postgresql://litellm:$_llpg@${AI_INFRA_LITELLM_PG_VIP:-192.168.105.206}:5432/litellm}"
 
-unset -f _fx _exp
-unset _repo _fnox_bin _d _vk _codex_vk _lf_public _lf_secret _lf_mcp_auth _lfpg _llpg
+unset -f _fx _exp _slug
+unset _repo _fnox_bin _d _vk _codex_vk _lf_public _lf_secret _lf_mcp_auth _lfpg _llpg _repo_name _repo_tag _branch_tag
