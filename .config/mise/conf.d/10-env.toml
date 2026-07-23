@@ -148,10 +148,11 @@ OTEL_EXPORTER_OTLP_METRICS_TIMEOUT    = "50000"
 OTEL_EXPORTER_OTLP_LOGS_TIMEOUT       = "50000"
 OTEL_EXPORTER_OTLP_TRACES_TIMEOUT     = "50000"
 
-# A8 (GATED — Lane G): tool-search deferral. Leave UNSET for now; unset already loads all tools
-# upfront under a gateway. Uncomment ONLY after the remote LiteLLM tool_reference passthrough test
-# (Lane G) passes — otherwise `auto`/`true` make requests fail on tool_reference rejection.
-# ENABLE_TOOL_SEARCH = "auto"
+# A8 (Lane G — VERIFIED): tool-search deferral. Remote test confirmed LiteLLM forwards tool_reference
+# (ENABLE_TOOL_SEARCH=true returned cleanly through the gateway — the doc says =true always defers +
+# sends the beta and "requests fail on proxies that do not support tool_reference", so success proves
+# passthrough). `auto` defers only when MCP tools exceed 10% of context; safe now that passthrough works.
+ENABLE_TOOL_SEARCH                    = "auto"
 
 # ── DELIBERATELY UNSET (documented — max-capture posture) ─────────────────────────────────────
 # These are intentionally NOT set; setting any of them would REDUCE capture:
