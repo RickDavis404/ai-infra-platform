@@ -60,8 +60,14 @@ loki:
   limits_config:
     retention_period: 2160h
     allow_structured_metadata: true
+    # max_line_size stays at 64MB — do NOT reduce it. Loki's own default is
+    # 256KB, but measured history on this cluster has included lines up to
+    # 10.8 MiB, and Loki has never actually dropped a line at the 64MB
+    # ceiling. max_line_size_truncate=true is the safety net for the future:
+    # if a line ever does exceed 64MB it gets truncated (kept, log-shipped)
+    # rather than dropped outright.
     max_line_size: 64MB
-    max_line_size_truncate: false
+    max_line_size_truncate: true
     ingestion_rate_mb: 32
     ingestion_burst_size_mb: 64
     reject_old_samples: true

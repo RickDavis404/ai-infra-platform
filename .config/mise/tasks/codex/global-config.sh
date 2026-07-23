@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
-#MISE description="Merge the ai-infra [otel]/trust/provider blocks into the real ~/.codex/config.toml (timestamped backup, idempotent)."
+#MISE description="Merge the ai-infra [otel]/[history]/[hooks]/trust/provider blocks + top-level model_reasoning_summary into the real ~/.codex/config.toml (timestamped backup, idempotent)."
 # .config/mise/tasks/codex/global-config.sh — USER-layer Codex config merge.
 #
 # The repo no longer overrides CODEX_HOME, so bare `codex` reads ~/.codex/config.toml.
-# `[otel]` is DENIED at the project layer (.codex/config.toml), so the ONLY place the
-# telemetry exporters + project trust + inert litellm_local provider definition can
-# live is the USER config. This task merges those blocks in, parse-aware and idempotent:
-# a block that already exists is SKIPPED (a naive duplicate `[otel]` table would be a
-# TOML parse error), unrelated keys are never touched, and the pre-merge file is backed
-# up with a UTC timestamp. No secret is written — the LiteLLM auth header is injected at
-# launch by the wrapper / launch task, never persisted here.
+# `[otel]` (and, like it, the git-context `[hooks]` and the max-capture `[history]` pin)
+# is DENIED / not-the-loaded-copy at the project layer (.codex/config.toml), and hooks are
+# trust-gated, so the ONLY reliable place the telemetry exporters + persistence pin +
+# git-context hook + project trust + inert litellm_local provider definition can live is
+# the USER config; the same goes for the top-level `model_reasoning_summary` pin that makes
+# codex emit capturable reasoning-summary text (the rollout reasoning item is empty without
+# it). This task merges those blocks in, parse-aware and idempotent: a block
+# that already exists is SKIPPED (a naive duplicate `[otel]` table would be a TOML parse
+# error), unrelated keys are never touched, and the pre-merge file is backed up with a UTC
+# timestamp. No secret is written — the LiteLLM auth header is injected at launch by the
+# wrapper / launch task, never persisted here.
 set -euo pipefail
 
 REPO_ROOT="${MISE_PROJECT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && { git rev-parse --show-toplevel 2>/dev/null || pwd -P; })}"
@@ -115,19 +119,77 @@ if data.get("model_providers", {}).get("litellm_local") is None:
 else:
     print("skip [model_providers.litellm_local] (already present)", file=sys.stderr)
 
-if not blocks:
-    print("all ai-infra blocks already present; nothing to merge", file=sys.stderr)
+# [history] — pin persistence EXPLICITLY to save-all (max-capture). max_bytes is
+# DELIBERATELY omitted: its default is uncapped, so pinning it could only shrink the
+# retained ~/.codex/history.jsonl. This USER-config copy is the one codex actually loads.
+if "history" not in data:
+    blocks.append('[history]\npersistence = "save-all"')
+else:
+    print("skip [history] (already present)", file=sys.stderr)
+
+# [hooks] — codex git-context correlation hook (Lane D3). Codex reads the USER config once
+# CODEX_HOME is retired, denies telemetry-class blocks at the project layer, and gates hooks
+# behind per-machine trust, so — exactly like [otel] — the ONLY reliable, trusted home for a
+# committed hook is here. PostToolUse / matcher "Bash|shell|local_shell" runs the shared
+# script on shell tool-calls. The matcher is WIDENED (vs Claude's plain "Bash") because
+# codex names its shell tool "shell"/"local_shell", NOT "Bash" (see otel-git-context.py
+# ~L194) — a bare "Bash" would silently never fire the codex lane. The alternation stays
+# targeted while covering both names; even so the script's command-payload regex is the real
+# gate (it reads the codex hook JSON on stdin — session id, tool cmd/response — and emits an
+# OTLP correlation span/metric/log keyed by session id). `timeout` is in SECONDS (900 == the
+# plugin-hook ceiling). Only `command` handlers are honored (codex does not yet support
+# async/prompt/agent hooks). A one-time "Hooks need review" trust approval is required per
+# machine (or `codex ... --dangerously-bypass-hook-trust` for vetted automation).
+if "hooks" not in data:
+    hook_cmd = f'python3 "{abs_repo}/.config/hooks/otel-git-context.py"'
+    blocks.append(
+        "[[hooks.PostToolUse]]\n"
+        'matcher = "Bash|shell|local_shell"\n'
+        f'hooks = [{{ type = "command", command = "{esc(hook_cmd)}", timeout = 900 }}]'
+    )
+else:
+    print("skip [hooks] (already present)", file=sys.stderr)
+
+# model_reasoning_summary — a TOP-LEVEL (root-table) key, NOT a table: it makes codex emit
+# reasoning-summary text (capturable) even headless; without it the rollout reasoning item is
+# empty. "detailed" is the fullest summary. Because a bare root key MUST precede the first
+# table header in TOML, it CANNOT ride in the appended table `blocks` (they land after every
+# existing table) — it is collected here and spliced in at the very top of the file below.
+top_level = []
+if "model_reasoning_summary" not in data:
+    top_level.append('model_reasoning_summary = "detailed"')
+else:
+    print("skip model_reasoning_summary (already present)", file=sys.stderr)
+
+if not blocks and not top_level:
+    print("all ai-infra blocks/keys already present; nothing to merge", file=sys.stderr)
     sys.exit(0)
 
-header = existing
-sep = b"" if (not header or header.endswith(b"\n")) else b"\n"
-addition = (
-    "\n# --- ai-infra-platform: codex USER-layer telemetry / trust / provider "
-    "(managed by `mise run codex:global-config`) ---\n"
-    + "\n\n".join(blocks)
-    + "\n"
-)
-merged = header + sep + addition.encode("utf-8")
+# Top-level (root-table) keys MUST precede the first table header, so they are spliced in at
+# the very top of the file — the root table always opens there, so this is valid no matter
+# what tables already exist below — rather than appended alongside the table blocks.
+prefix = b""
+if top_level:
+    prefix = (
+        "# --- ai-infra-platform: codex USER-layer top-level keys "
+        "(managed by `mise run codex:global-config`) ---\n"
+        + "\n".join(top_level)
+        + "\n\n"
+    ).encode("utf-8")
+
+body = prefix + existing
+# Append the table blocks after all existing content (only when there are any to add).
+tail = b""
+if blocks:
+    sep = b"" if (not body or body.endswith(b"\n")) else b"\n"
+    tail = sep + (
+        "\n# --- ai-infra-platform: codex USER-layer telemetry / history / hooks / trust / provider "
+        "(managed by `mise run codex:global-config`) ---\n"
+        + "\n\n".join(blocks)
+        + "\n"
+    ).encode("utf-8")
+
+merged = body + tail
 
 # Verify the merged result parses BEFORE writing (guards any block-construction slip).
 try:
@@ -135,9 +197,10 @@ try:
 except tomllib.TOMLDecodeError as e:
     sys.exit(f"merge produced invalid TOML, aborting without write ({e})")
 
-# Back up the pre-merge file — reached ONLY when >=1 block will be appended (the
-# `if not blocks: sys.exit(0)` guard above returns first on an idempotent no-op run),
-# so re-runs that merge nothing never litter the codex home with identical backups.
+# Back up the pre-merge file — reached ONLY when >=1 block OR top-level key will be merged
+# (the `if not blocks and not top_level: sys.exit(0)` guard above returns first on an
+# idempotent no-op run), so re-runs that merge nothing never litter the codex home with
+# identical backups.
 # cp -L semantics: copyfile reads THROUGH a symlink and writes a plain regular file;
 # never overwrite an existing backup (append the pid on a same-second collision).
 if file_existed:
@@ -154,7 +217,7 @@ else:
 with open(path, "wb") as fh:
     fh.write(merged)
 
-print(f"merged {len(blocks)} block(s) into {path}", file=sys.stderr)
+print(f"merged {len(blocks)} block(s) + {len(top_level)} top-level key(s) into {path}", file=sys.stderr)
 PY
 
 # No secrets are written, but keep the user config owner-only regardless of prior perms.

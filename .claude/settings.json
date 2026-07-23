@@ -3,12 +3,27 @@
     "langfuse-observability": {
       "source": {
         "source": "github",
-        "repo": "langfuse/Claude-Observability-Plugin"
+        "repo": "RickDavis404/claude-observability-plugin"
       }
     }
   },
   "enabledPlugins": {
     "langfuse-observability@langfuse-observability": true
+  },
+
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/.config/hooks/otel-git-context.py",
+            "timeout": 900
+          }
+        ]
+      }
+    ]
   },
 
   "enableAllProjectMcpServers": true,

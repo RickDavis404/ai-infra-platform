@@ -20,4 +20,11 @@ source "${REPO_ROOT}/.config/mise/lib/common.sh"
 
 install_err_trap
 mise_log_handoff codex
+
+# Project-local temp dir (Lane F): mirror the wrapper's TMPDIR scoping for the `mise run`
+# path so `mise run codex[:launch]` and a bare `codex` behave identically. Scoped to the
+# codex launcher only — NOT a global mise `[env]` var (that would redirect every tool).
+export TMPDIR="${REPO_ROOT}/.local/tmp-codex"
+mkdir -p "${TMPDIR}"
+
 exec "${REPO_ROOT}/.config/bin/codex" "$@"

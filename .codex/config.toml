@@ -9,8 +9,10 @@ project_doc_fallback_filenames = ["CLAUDE.md"]
 # TOP-LEVEL key (before the first table) so codex honors it, not a nested table key.
 tool_output_token_limit = 128000
 
-# history.persistence default is already save-all with NO max_bytes cap — keep defaults
-# (explicitly: do NOT set persistence="none" or max_bytes). ~/.codex/history.jsonl grows
+# history.persistence is now pinned EXPLICITLY to "save-all" in the USER config
+# (~/.codex/config.toml, merged by `mise run codex:global-config`) — the copy codex loads —
+# alongside the other telemetry blocks, NOT here. max_bytes stays UNSET (its default is
+# uncapped: do NOT set it, and do NOT set persistence="none"). ~/.codex/history.jsonl grows
 # unbounded; disk headroom is checked in the verification battery (§F).
 
 [mcp_servers.grafana]

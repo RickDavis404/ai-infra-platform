@@ -41,9 +41,17 @@ source "${REPO_ROOT}/.config/mise/lib/common.sh"
 install_err_trap
 require_cmd mise jq
 
-# The published marketplace source (owner/repo), the marketplace name codex derives
-# from it, and the fully-qualified plugin id. Verified live against codex 0.144.1.
-MARKETPLACE_SOURCE="langfuse/codex-observability-plugin"
+# The marketplace source (owner/repo), the marketplace name codex derives from it, and
+# the fully-qualified plugin id. Marketplace-name derivation verified live against codex
+# 0.144.1. Points at the USER FORK (RickDavis404/codex-observability-plugin) so it moves
+# in LOCK-STEP with the Claude side (.claude/settings.json extraKnownMarketplaces ->
+# RickDavis404/claude-observability-plugin): both CLIs' plugin sources are the user's
+# forks that carry the Lane-H 900s Stop-hook `timeout` (upstream ships 30s, which actively
+# truncates the codex Stop hook). DEPLOY SEQUENCING: the 900s hooks.json commit must be on
+# the fork's DEFAULT branch before this repoint is deployed — `plugin marketplace add`
+# owner/repo pulls the default branch (no in-source ref pin), so push the fork ahead of use.
+MARKETPLACE_SOURCE="RickDavis404/codex-observability-plugin"
+MARKETPLACE_NAME="${MARKETPLACE_SOURCE##*/}"   # codex derives the marketplace name from the repo basename
 PLUGIN_ID="tracing@codex-observability-plugin"
 
 # Resolve the REAL mise-managed codex WITHOUT PATH — the committed .config/bin/codex
@@ -74,9 +82,26 @@ _plugin_ready() {
     jq -e --arg id "${PLUGIN_ID}" '(.installed // [])[] | select(.pluginId==$id) | (.installed==true and .enabled==true)' >/dev/null 2>&1
 }
 
-if _plugin_ready; then
-  info "codex plugin already installed + enabled: ${PLUGIN_ID} (nothing to do)"
+# _source_matches — true iff the installed marketplace's source references the desired
+# owner/repo (MARKETPLACE_SOURCE). Guards the upstream->fork transition: `_plugin_ready`
+# alone is idempotent-true even when the plugin is installed from the WRONG source (e.g.
+# a prior install from langfuse/ upstream), so re-runs would never re-point to the fork.
+_source_matches() {
+  grep -A3 '^\[marketplaces\.' "${config_toml}" 2>/dev/null | grep -q -- "${MARKETPLACE_SOURCE}"
+}
+
+if _plugin_ready && _source_matches; then
+  info "codex plugin already installed + enabled from ${MARKETPLACE_SOURCE} (nothing to do)"
 else
+  # Source drift: plugin installed, but from a different marketplace source than desired
+  # (upstream -> fork). Remove the stale plugin + marketplace so the add below re-points
+  # cleanly (the fork's derived marketplace NAME collides with upstream's, so a bare
+  # `marketplace add` would not switch the source on its own).
+  if _plugin_ready && ! _source_matches; then
+    info "marketplace source drift -> re-pointing ${PLUGIN_ID} to fork ${MARKETPLACE_SOURCE}"
+    "${real_codex}" plugin remove "${PLUGIN_ID}" </dev/null 2>/dev/null || true
+    "${real_codex}" plugin marketplace remove "${MARKETPLACE_NAME}" </dev/null 2>/dev/null || true
+  fi
   # Back up the user config BEFORE codex mutates it — only on the mutating path (a
   # ready no-op above never litters a backup). Idiom matches codex:global-config.
   if [[ -f "${config_toml}" ]]; then
