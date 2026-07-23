@@ -25,6 +25,7 @@ metric-name prefix are retired.
 | `session.id` | UUID | `session_id` | `conversation_id` | `conversation.id` / `thread.id` | (n/a) |
 | `gen_ai.request.model` / `model` | model id | observation.model | metadata | attr | label |
 | `litellm.key_alias` / `litellm.team` | `claude-code` / `agents` | default_tags | — | attr | label |
+| `vcs.repository.name` / `vcs.branch.name` | `ai-infra-platform` / `feat/otel-max-capture-sweep` | metadata | metadata | resource | label |
 
 Standard values and rules:
 
@@ -58,6 +59,45 @@ Standard values and rules:
   is reconstructed by the **§8d** sitecustomize before any sink reads it, so it lands in
   spend-logs, s3_v2, and the classic Langfuse trace alike; see
   [`developer-workflows.md`](developer-workflows.md) §6.2.
+- **`vcs.repository.name` / `vcs.branch.name` — dynamic git context.** Appended to
+  `OTEL_RESOURCE_ATTRIBUTES` at shell-init by a mise `{{exec()}}` (origin-remote slug →
+  git-toplevel-dir basename → `unknown`; branch via `git branch --show-current` →
+  `detached`), so every metric/log/trace a CLI emits is tagged with the repo + branch
+  it ran on. The example value `ai-infra-platform` above is the **origin-remote slug**
+  (resolved first); the git-toplevel-dir basename (`ai-infra-platform-claude` on this
+  clone) is only the fallback. **`vcs.branch.name` is the single canonical branch key**
+  used across resource attrs **and** the §1.1 correlation records, so one selector matches
+  both. `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=true` carries them onto Claude
+  Code metrics as Prometheus labels. The same `repo`/`branch` pair is also stamped as
+  **LiteLLM spend tags** via the `x-litellm-spend-logs-metadata` header (composed in
+  `ANTHROPIC_CUSTOM_HEADERS` for Claude, the `.config/bin/codex` wrapper for Codex), so
+  gateway spend logs pivot by repository and branch too. Both CLIs honor the single
+  `OTEL_RESOURCE_ATTRIBUTES` var.
+
+### 1.1 Dynamic git-context correlation (branch / PR events)
+
+Beyond the static `vcs.*` resource attributes, a **`PostToolUse` `Bash` hook**
+(`.config/hooks/otel-git-context.*`, wired in Claude `settings.json` and the codex hook
+config) detects `git checkout -b` / `git switch -c` / `gh pr create`, parses the new
+branch and PR number, and emits a **correlation triplet — one span, one
+`agent.git.event` counter metric, and one log** — each carrying
+`{session.id, vcs.repository.name, vcs.branch.name, vcs.pr.number, event, agent}`
+(the branch rides under the **same canonical `vcs.branch.name` key** as the §1 resource
+attrs, so a single selector matches both signal families),
+posted to the OTel Collector at `http://$AI_INFRA_OTEL_VIP:4318` (the VIP is used
+because Claude strips inherited `OTEL_*` env from hooks). Because a hook cannot mutate
+an already-running span, the design **appends** correlation records rather than
+rewriting session spans:
+
+- **Claude** — the hook inherits `TRACEPARENT` (`CLAUDE_CODE_PROPAGATE_TRACEPARENT=1`),
+  so its span joins the live session trace as a **child**; tagged
+  `service.name=claude-code`, it also reaches Langfuse.
+- **Codex** — hooks do **not** receive traceparent, so codex emits a **root correlation
+  trace keyed by `session.id`** that pivots back to the gateway trace by the universal
+  join key.
+
+Net: every branch cut and PR opened during a run is queryable — **appended, never
+overwriting** — and joined back to the session by `session.id`.
 
 ## 2. Signal routing (per backend)
 
@@ -122,11 +162,28 @@ touched:
 | Stage | Setting |
 |---|---|
 | OTel Collector | gRPC `max_recv_msg_size_mib: 64`; HTTP `max_request_body_size: 67108864` |
-| Loki | `max_line_size: 64MB` (`max_line_size_truncate: false`); `grpc_server_max_recv/send_msg_size: 67108864`; `ingestion_rate_mb: 32`; `ingestion_burst_size_mb: 64` |
+| Loki | `max_line_size: 64MB` (`max_line_size_truncate: true`); `grpc_server_max_recv/send_msg_size: 67108864`; `ingestion_rate_mb: 32`; `ingestion_burst_size_mb: 64` |
 | Tempo | `overrides.defaults.global.max_bytes_per_trace: 67108864` |
 
-The host-side Claude Code per-field capture cap `CC_LANGFUSE_MAX_CHARS=67108864`
-matches the server-side ceiling.
+The host-side Claude Code **inline-attribute** caps match the same ceiling:
+`CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH=67108864` (raising the 60 KB per-body OTLP content
+default) and the langfuse-plugin `CC_LANGFUSE_MAX_CHARS=67108864` — so the
+**inline-attribute ceiling is a uniform 64 MiB from client capture through server
+intake**. Loki additionally sets `max_line_size_truncate: true`: measured history has
+lines up to ~10.8 MiB and none has ever been dropped at 64 MB, but if a line ever does
+exceed the ceiling it is truncated (kept + shipped) rather than dropped outright.
+
+### 2.2 Batch-queue anti-drop (shared client SDK)
+
+The OTel SDK's default batch queue holds only **2048** records and **silently drops**
+anything beyond it under a burst — exactly what a high-fan-out agent run produces. Both
+CLIs raise the shared queues to **16384** (`OTEL_BSP_MAX_QUEUE_SIZE` for spans,
+`OTEL_BLRP_MAX_QUEUE_SIZE` for log records; export batch `2048`) so a burst of
+spans/logs is buffered rather than dropped before export. This is the biggest "stop
+losing events" lever and — unlike the Claude-only `CLAUDE_CODE_*` knobs — is honored by
+**both** claude and codex through the shared OTel SDK. The export-cadence and
+attribute-count pins that round out the client posture are catalogued in
+[`.claude/CLAUDE-RATE-LIMITING.md`](../.claude/CLAUDE-RATE-LIMITING.md).
 
 ## 3. The GenAI OTTL transform (keystone)
 
@@ -230,6 +287,14 @@ model request/response bodies. It MUST NOT capture authentication material:
 `Authorization` headers, `x-litellm-api-key`, OAuth tokens, provider API keys, or
 store passwords. Telemetry pipelines never copy these into spans, logs, or
 metrics.
+
+**Extended thinking capture.** Claude Code's raw-body logger writes model thinking as
+`<REDACTED>` — that redaction is unconditional and has no toggle. The full
+**summarized** thinking is nonetheless preserved **unredacted** in the on-disk session
+transcripts (`~/.claude/projects/**/*.jsonl`), which is where thinking is searchable;
+the raw-body logs redact it by design. The **raw, unsummarized** chain-of-thought is
+never exposed to any caller (not API-recoverable), so it cannot be captured anywhere —
+a provider-side limit, not a config gap.
 
 **Privacy caveat (local-lab-only).** Because full capture records whatever the
 user typed or pasted, and raw-body capture writes bodies to disk, this posture is

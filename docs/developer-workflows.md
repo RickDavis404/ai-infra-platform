@@ -351,8 +351,14 @@ routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth heade
   `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1`; all three exporters are `otlp` over
   `http/protobuf` to the OTel Collector VIP `192.168.105.203:4318` with `/v1/*`
   paths (no `/otel` prefix; `127.0.0.1:34318` via `port-forward:otel` is the fallback).
-- `OTEL_RESOURCE_ATTRIBUTES = deployment.environment=ai-infra-platform-local` — the
-  canonical environment identity (supersedes the source's bare `local-dev`).
+- `OTEL_RESOURCE_ATTRIBUTES` — the canonical environment identity
+  `deployment.environment=ai-infra-platform-local` (supersedes the source's bare
+  `local-dev`), with **dynamic git context appended at shell-init** by a mise
+  `{{exec()}}`: `vcs.repository.name=<repo>,vcs.branch.name=<branch>` (origin-remote
+  slug → git-toplevel-dir basename fallback → `unknown`; branch via
+  `git branch --show-current` → `detached`), so every metric/log/trace carries the
+  repo + branch it was produced on. Both CLIs honor this one var; detail in
+  [`observability-taxonomy.md`](observability-taxonomy.md) §1.
 - Full-capture flags (privacy default-off, enabled here): `OTEL_LOG_USER_PROMPTS=1`,
   `OTEL_LOG_TOOL_DETAILS=1`, `OTEL_LOG_TOOL_CONTENT=1`, `OTEL_LOG_ASSISTANT_RESPONSES=1`,
   and `CLAUDE_CODE_PROPAGATE_TRACEPARENT=1` (forces W3C traceparent into the gateway for
@@ -364,6 +370,30 @@ routing/telemetry vars) plus `secret-env.sh` (the fnox-resolved proxy-auth heade
   to Loki, where `body_ref == log.file.path` rejoins them to the
   `claude_code.api_request_body`/`api_response_body` events (see the privacy caveat in
   [`observability-taxonomy.md`](observability-taxonomy.md)).
+- Max-capture tuning (`conf.d/10-env.toml`, verified against claude-code 2.1.216;
+  full table + defaults in
+  [`.claude/CLAUDE-RATE-LIMITING.md`](../.claude/CLAUDE-RATE-LIMITING.md)). Beyond the
+  toggles above: `CLAUDE_CODE_OTEL_CONTENT_MAX_LENGTH=67108864` raises the 60 KB
+  per-body OTLP content cap to 64 MiB (matching the Loki/Langfuse ceilings);
+  `CLAUDE_CODE_OTEL_DIAG_STDERR=1` surfaces exporter errors on stderr;
+  `CLAUDE_CODE_OTEL_SHUTDOWN_TIMEOUT_MS`/`CLAUDE_CODE_OTEL_FLUSH_TIMEOUT_MS=600000`
+  give the batch processors up to 600s to drain on exit so nothing is lost; and
+  `CLAUDE_CODE_FORCE_SESSION_PERSISTENCE=1`, `CLAUDE_CODE_FORWARD_SUBAGENT_TEXT=1`,
+  `CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS=3600000`, `TASK_MAX_OUTPUT_LENGTH=160000` keep
+  session + subagent/Task output in the capture. The shared OTel-SDK batch queues are
+  raised off the drop-prone 2048 default — `OTEL_BLRP_MAX_QUEUE_SIZE` /
+  `OTEL_BSP_MAX_QUEUE_SIZE=16384` (export batch `2048`) — so high-fan-out bursts don't
+  silently drop logs/spans (codex honors these too), and the attribute count-limits are
+  widened to 512 (`OTEL_ATTRIBUTE_COUNT_LIMIT`, `OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`,
+  `OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT`). Export cadence is pinned to the SDK defaults
+  (`OTEL_METRIC_EXPORT_INTERVAL=60000`,
+  `OTEL_LOGS_EXPORT_INTERVAL`/`OTEL_TRACES_EXPORT_INTERVAL=5000`,
+  `OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE=delta`) so an SDK change can't
+  drift them, and `CLAUDE_CODE_TMPDIR={{config_root}}/.local/tmp-claude` keeps scratch
+  files in the gitignored `.local/` tree. Attribute **value**-length limits and the
+  entire `DISABLE_*` / `OTEL_SDK_DISABLED` family are **deliberately left unset** (unset
+  value-length = unlimited = max; any non-empty `DISABLE_*` — even `"0"` — would turn
+  capture off).
 - The `langfuse-observability` plugin (enabled via `enabledPlugins` +
   `extraKnownMarketplaces`) handles Claude Code -> Langfuse tracing.
 
