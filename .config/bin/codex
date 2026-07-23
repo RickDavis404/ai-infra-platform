@@ -20,6 +20,14 @@ source "${REPO_ROOT}/.config/mise/lib/common.sh"
 install_err_trap
 require_cmd mise fnox
 
+# --- Project-local temp dir (Lane F) -----------------------------------------
+# Scope codex's scratch (large tool-output spills, rollout temp files) to the gitignored
+# <repo>/.local/tmp-codex so it never leaks into the shared system TMPDIR. Exported HERE,
+# before exec, so a BARE `codex` gets it too; codex/launch.sh sets the same value for the
+# `mise run` path. NOT a global mise `[env]` var — that would redirect EVERY tool's TMPDIR.
+export TMPDIR="${REPO_ROOT}/.local/tmp-codex"
+mkdir -p "${TMPDIR}"
+
 # Resolve the REAL mise-managed codex WITHOUT PATH (this wrapper shadows the name).
 # `mise which` queries the tool registry, so it returns the npm install path — never
 # this wrapper — which is why exec'ing it cannot recurse.
@@ -42,11 +50,28 @@ export LANGFUSE_MCP_AUTH_HEADER
 # Default to Codex's bundled model catalog; CODEX_MODEL overrides for one-off checks.
 model="${CODEX_MODEL:-gpt-5.5}"
 
+# --- Dynamic git context for the spend-log tags (Lane D2) --------------------
+# repo := basename of the origin remote URL (strip .git) -> toplevel dir basename -> "unknown".
+# branch := current branch -> "detached". Every step is `|| true`/`2>/dev/null` so it never
+# trips `set -e` outside a repo. Both values are then normalized to a JSON-safe slug that is
+# BYTE-IDENTICAL to secret-env.sh `_slug` (any char outside [A-Za-z0-9._/-] -> `_`, CR/LF
+# stripped) so the codex and Claude spend tags match EXACTLY for cross-CLI spend pivots on the
+# shared repo/branch keys — and no crafted name can break out of the JSON-in-TOML-in-shell
+# nesting below (the complement mapping also subsumes the old "/\ strip).
+codex_repo="$(basename -s .git "$(git -C "${REPO_ROOT}" remote get-url origin 2>/dev/null)" 2>/dev/null || true)"
+[[ -n "${codex_repo}" ]] || codex_repo="$(basename "$(git -C "${REPO_ROOT}" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || true)"
+[[ -n "${codex_repo}" ]] || codex_repo="unknown"
+codex_branch="$(git -C "${REPO_ROOT}" branch --show-current 2>/dev/null || true)"
+[[ -n "${codex_branch}" ]] || codex_branch="detached"
+codex_repo="$(printf '%s' "${codex_repo}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
+codex_branch="$(printf '%s' "${codex_branch}" | tr -d '\r\n' | LC_ALL=C tr -c 'A-Za-z0-9._/-' '_')"
+
 info "launching codex (repo wrapper) against the LiteLLM gateway VIP (${AI_INFRA_LITELLM_VIP:-192.168.105.200}:4000)"
 
 # `codex -c key=value` parses value as TOML (string values inner-quoted; inline tables
 # use TOML inline syntax). The spend-logs-metadata header is a JSON string whose inner
-# double-quotes are TOML-escaped (\\\" -> \") so LiteLLM tags the spend-log row.
+# double-quotes are TOML-escaped (\\\" -> \") so LiteLLM tags the spend-log row with the
+# source/host plus the dynamic git context (repo/branch, computed defensively above).
 #
 # grafana MCP: inject the FULL definition (command/args/GRAFANA_URL + creds), not just the
 # secret env. CODEX_HOME is retired, so codex loads the USER config (~/.codex/config.toml),
@@ -64,7 +89,7 @@ exec "${real_codex}" \
   --config 'model_providers.litellm_local.wire_api="responses"' \
   --config 'model_providers.litellm_local.supports_websockets=false' \
   --config 'model_providers.litellm_local.stream_idle_timeout_ms=900000' \
-  --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\"}\" }" \
+  --config "model_providers.litellm_local.http_headers={ \"X-Litellm-Api-Key\" = \"Bearer ${CODEX_LITELLM_VIRTUAL_KEY}\", \"x-litellm-spend-logs-metadata\" = \"{\\\"source\\\":\\\"codex\\\",\\\"host\\\":\\\"$(hostname -s)\\\",\\\"repo\\\":\\\"${codex_repo}\\\",\\\"branch\\\":\\\"${codex_branch}\\\"}\" }" \
   --config 'mcp_servers.grafana.command="uvx"' \
   --config 'mcp_servers.grafana.args=["mcp-grafana", "--disable-write"]' \
   --config "mcp_servers.grafana.env.GRAFANA_URL=\"http://${AI_INFRA_GRAFANA_VIP:-192.168.105.202}:3000\"" \

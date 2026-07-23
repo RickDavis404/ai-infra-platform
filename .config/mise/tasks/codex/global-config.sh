@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
-#MISE description="Merge the ai-infra [otel]/trust/provider blocks into the real ~/.codex/config.toml (timestamped backup, idempotent)."
+#MISE description="Merge the ai-infra [otel]/[history]/[hooks]/trust/provider blocks into the real ~/.codex/config.toml (timestamped backup, idempotent)."
 # .config/mise/tasks/codex/global-config.sh — USER-layer Codex config merge.
 #
 # The repo no longer overrides CODEX_HOME, so bare `codex` reads ~/.codex/config.toml.
-# `[otel]` is DENIED at the project layer (.codex/config.toml), so the ONLY place the
-# telemetry exporters + project trust + inert litellm_local provider definition can
-# live is the USER config. This task merges those blocks in, parse-aware and idempotent:
-# a block that already exists is SKIPPED (a naive duplicate `[otel]` table would be a
-# TOML parse error), unrelated keys are never touched, and the pre-merge file is backed
-# up with a UTC timestamp. No secret is written — the LiteLLM auth header is injected at
-# launch by the wrapper / launch task, never persisted here.
+# `[otel]` (and, like it, the git-context `[hooks]` and the max-capture `[history]` pin)
+# is DENIED / not-the-loaded-copy at the project layer (.codex/config.toml), and hooks are
+# trust-gated, so the ONLY reliable place the telemetry exporters + persistence pin +
+# git-context hook + project trust + inert litellm_local provider definition can live is
+# the USER config. This task merges those blocks in, parse-aware and idempotent: a block
+# that already exists is SKIPPED (a naive duplicate `[otel]` table would be a TOML parse
+# error), unrelated keys are never touched, and the pre-merge file is backed up with a UTC
+# timestamp. No secret is written — the LiteLLM auth header is injected at launch by the
+# wrapper / launch task, never persisted here.
 set -euo pipefail
 
 REPO_ROOT="${MISE_PROJECT_ROOT:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && { git rev-parse --show-toplevel 2>/dev/null || pwd -P; })}"
@@ -115,6 +117,37 @@ if data.get("model_providers", {}).get("litellm_local") is None:
 else:
     print("skip [model_providers.litellm_local] (already present)", file=sys.stderr)
 
+# [history] — pin persistence EXPLICITLY to save-all (max-capture). max_bytes is
+# DELIBERATELY omitted: its default is uncapped, so pinning it could only shrink the
+# retained ~/.codex/history.jsonl. This USER-config copy is the one codex actually loads.
+if "history" not in data:
+    blocks.append('[history]\npersistence = "save-all"')
+else:
+    print("skip [history] (already present)", file=sys.stderr)
+
+# [hooks] — codex git-context correlation hook (Lane D3). Codex reads the USER config once
+# CODEX_HOME is retired, denies telemetry-class blocks at the project layer, and gates hooks
+# behind per-machine trust, so — exactly like [otel] — the ONLY reliable, trusted home for a
+# committed hook is here. PostToolUse / matcher "Bash|shell|local_shell" runs the shared
+# script on shell tool-calls. The matcher is WIDENED (vs Claude's plain "Bash") because
+# codex names its shell tool "shell"/"local_shell", NOT "Bash" (see otel-git-context.py
+# ~L194) — a bare "Bash" would silently never fire the codex lane. The alternation stays
+# targeted while covering both names; even so the script's command-payload regex is the real
+# gate (it reads the codex hook JSON on stdin — session id, tool cmd/response — and emits an
+# OTLP correlation span/metric/log keyed by session id). `timeout` is in SECONDS (900 == the
+# plugin-hook ceiling). Only `command` handlers are honored (codex does not yet support
+# async/prompt/agent hooks). A one-time "Hooks need review" trust approval is required per
+# machine (or `codex ... --dangerously-bypass-hook-trust` for vetted automation).
+if "hooks" not in data:
+    hook_cmd = f'python3 "{abs_repo}/.config/hooks/otel-git-context.py"'
+    blocks.append(
+        "[[hooks.PostToolUse]]\n"
+        'matcher = "Bash|shell|local_shell"\n'
+        f'hooks = [{{ type = "command", command = "{esc(hook_cmd)}", timeout = 900 }}]'
+    )
+else:
+    print("skip [hooks] (already present)", file=sys.stderr)
+
 if not blocks:
     print("all ai-infra blocks already present; nothing to merge", file=sys.stderr)
     sys.exit(0)
@@ -122,7 +155,7 @@ if not blocks:
 header = existing
 sep = b"" if (not header or header.endswith(b"\n")) else b"\n"
 addition = (
-    "\n# --- ai-infra-platform: codex USER-layer telemetry / trust / provider "
+    "\n# --- ai-infra-platform: codex USER-layer telemetry / history / hooks / trust / provider "
     "(managed by `mise run codex:global-config`) ---\n"
     + "\n\n".join(blocks)
     + "\n"
